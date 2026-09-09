@@ -25,11 +25,17 @@ version: "v1alpha1"
 
 # 1. Define Local Services
 services:
-  # Example: Expose a local CLI MCP server to the mesh
+  # Example: Expose a local CLI MCP server to the mesh (stdio subprocess)
   - type: mcp
     name: local-shell-tools
     description: "Execute bash commands safely in a local container"
     command: ["npx", "-y", "@modelcontextprotocol/server-everything"]
+
+  # Example: Expose an existing HTTP MCP server to the mesh (no subprocess)
+  - type: mcp
+    name: remote-docs-server
+    description: "Proxy an already-running Streamable HTTP MCP server"
+    target_url: "http://localhost:9001/mcp"
 
   # Example: Expose a local inference endpoint
   - type: inference
@@ -58,9 +64,9 @@ The `services` array allows you to register endpoints that remote peers in the S
 | `type` | The protocol protocol type. Supported values are `mcp` (Model Context Protocol), `inference`, or `a2a`. |
 | `name` | The unique name of the service (e.g., `git-helper`). This must exactly match the name authorized by the control plane's mesh policy (e.g., `mcp://git-helper`). |
 | `description` | A human-readable description published to the mesh discovery catalogue. |
-| `command` | *(For MCP)* The executable command array to spawn as a local subprocess (e.g. `["node", "index.js"]`). |
+| `command` | *(For MCP)* The executable command array to spawn as a local subprocess, speaking MCP over stdio (e.g. `["node", "index.js"]`). Mutually exclusive with `target_url`. |
 | `env` | *(For MCP)* Key-value environment variables passed to the subprocess. |
-| `target_url` | *(For HTTP/Inference/A2A)* The upstream local URL to proxy traffic to. |
+| `target_url` | *(For MCP/Inference/A2A)* The upstream URL to proxy traffic to. For `type: mcp`, this points to an already-running Streamable HTTP MCP server; SAM does not spawn or manage its lifecycle, but only proxies to it. Mutually exclusive with `command`. |
 
 ### Inference Service Path Standards & Proxy Routing
 

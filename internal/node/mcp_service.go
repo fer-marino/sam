@@ -203,7 +203,13 @@ func (m *MCPService) HandleStreamPassThrough(s network.Stream) {
 	// the final s.Close() at the top of this function. passThroughDrainTimeout
 	// bounds that wait so a client that never hangs up can't leak the stream
 	// forever.
-	clientErrc := make(chan error, 1)
+	//
+	// clientErrc is buffered for 2, not 1: a client write failure below is
+	// also a client-leg error (the stream to the client is dead, so there is
+	// nothing left to drain for), and with both goroutines able to send, an
+	// unlucky interleaving where the main select has already consumed one
+	// value could otherwise leave the second sender blocked forever.
+	clientErrc := make(chan error, 2)
 
 	go func() {
 		for {
@@ -217,6 +223,7 @@ func (m *MCPService) HandleStreamPassThrough(s network.Stream) {
 			}
 			if err := clientConn.Write(ctx, msg); err != nil {
 				logger.Debugf("[MCPService] %s: client write error: %v", m.info.Name, err)
+				clientErrc <- err
 				return
 			}
 		}

@@ -38,7 +38,7 @@ type backendProber interface {
 	Probe(ctx context.Context) error
 }
 
-// dhtProbeTimeout is the default bound on one backend probe before
+// defaultDHTProbeTimeout is the default bound on one backend probe before
 // advertising, used when a ServiceRegistry isn't given an explicit
 // BackendProbeTimeout (see Options.BackendProbeTimeout / --backend-probe-
 // timeout). Command-spawned backends (sam-node.yaml's `command`, launched as
@@ -46,7 +46,7 @@ type backendProber interface {
 // request - a moderately-featured interpreted-language MCP server's own
 // import/startup cost alone can exceed 2s - so this is a floor, not
 // something every backend is expected to meet.
-const dhtProbeTimeout = 2 * time.Second
+const defaultDHTProbeTimeout = 2 * time.Second
 
 // advertisable reports whether a service is fit to be published to the DHT.
 //
@@ -78,7 +78,7 @@ type ServiceRegistry struct {
 	reprovideNow func()
 
 	// backendProbeTimeout bounds each backend probe in advertisable. Defaults
-	// to dhtProbeTimeout; override with SetBackendProbeTimeout.
+	// to defaultDHTProbeTimeout; override with SetBackendProbeTimeout.
 	backendProbeTimeout time.Duration
 }
 
@@ -86,12 +86,12 @@ func NewServiceRegistry(d dhtProvider) *ServiceRegistry {
 	return &ServiceRegistry{
 		services:            map[string]Service{},
 		dht:                 d,
-		backendProbeTimeout: dhtProbeTimeout,
+		backendProbeTimeout: defaultDHTProbeTimeout,
 	}
 }
 
 // SetBackendProbeTimeout overrides the default backend probe timeout
-// (dhtProbeTimeout). A zero or negative duration is a no-op, so callers can
+// (defaultDHTProbeTimeout). A zero or negative duration is a no-op, so callers can
 // pass an unset Options.BackendProbeTimeout straight through without an
 // explicit zero-check.
 func (r *ServiceRegistry) SetBackendProbeTimeout(d time.Duration) {
@@ -103,10 +103,17 @@ func (r *ServiceRegistry) SetBackendProbeTimeout(d time.Duration) {
 	r.backendProbeTimeout = d
 }
 
-// probeTimeout returns the current backend probe timeout.
+// probeTimeout returns the current backend probe timeout, falling back to
+// defaultDHTProbeTimeout for a zero-initialized registry (e.g. a struct
+// literal built directly in a test, bypassing NewServiceRegistry) so it
+// behaves the same as a properly constructed one rather than timing out
+// every probe immediately.
 func (r *ServiceRegistry) probeTimeout() time.Duration {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	if r.backendProbeTimeout <= 0 {
+		return defaultDHTProbeTimeout
+	}
 	return r.backendProbeTimeout
 }
 

@@ -293,15 +293,17 @@ func newSlowProbingSvc(name string, delay time.Duration) *slowProbingService {
 }
 
 func (p *slowProbingService) Probe(ctx context.Context) error {
+	timer := time.NewTimer(p.delay)
+	defer timer.Stop()
 	select {
-	case <-time.After(p.delay):
+	case <-timer.C:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 }
 
-// The bug behind #376: dhtProbeTimeout was a hard-coded 2s with no way to
+// The bug behind #376: defaultDHTProbeTimeout was a hard-coded 2s with no way to
 // raise it, so a backend whose own cold-start cost alone exceeds that -
 // measured in practice for moderately-featured MCP server stacks - could
 // never be advertised on its first registration. SetBackendProbeTimeout
@@ -338,10 +340,10 @@ func TestServiceRegistry_BackendProbeTimeoutIsConfigurable(t *testing.T) {
 		}
 	})
 
-	t.Run("NewServiceRegistry defaults to dhtProbeTimeout unchanged", func(t *testing.T) {
+	t.Run("NewServiceRegistry defaults to defaultDHTProbeTimeout unchanged", func(t *testing.T) {
 		r := NewServiceRegistry(&fakeDHT{})
-		if got := r.probeTimeout(); got != dhtProbeTimeout {
-			t.Errorf("default probe timeout = %v, want %v (unchanged default behaviour)", got, dhtProbeTimeout)
+		if got := r.probeTimeout(); got != defaultDHTProbeTimeout {
+			t.Errorf("default probe timeout = %v, want %v (unchanged default behaviour)", got, defaultDHTProbeTimeout)
 		}
 	})
 
@@ -349,8 +351,8 @@ func TestServiceRegistry_BackendProbeTimeoutIsConfigurable(t *testing.T) {
 		r := NewServiceRegistry(&fakeDHT{})
 		r.SetBackendProbeTimeout(0)
 		r.SetBackendProbeTimeout(-1 * time.Second)
-		if got := r.probeTimeout(); got != dhtProbeTimeout {
-			t.Errorf("probe timeout after no-op sets = %v, want unchanged %v", got, dhtProbeTimeout)
+		if got := r.probeTimeout(); got != defaultDHTProbeTimeout {
+			t.Errorf("probe timeout after no-op sets = %v, want unchanged %v", got, defaultDHTProbeTimeout)
 		}
 	})
 }

@@ -98,6 +98,7 @@ Exposes capabilities directly to the OS registry, allowing native assistants (li
 
 1.  **Dashboard Tab**: Displays current status, Node ID, connected peers, and DHT size.
 2.  **Services Tab**: Allows enabling/disabling embedded sensors (Battery/Location) and bridging external local MCP servers.
+3.  **Attenuation Tab**: Datalog rules, policies and checks that limit who may call this node, one statement per line (e.g. `check if label("region", "eu-west-1");`). They are read when the node starts, and a syntax error fails the start. Same syntax and same errors as the `attenuation` block of `sam-node.yaml`; see [Node configuration §3](../../site/content/docs/user/node-configuration.md#3-defining-local-security-target-attenuation).
 
 ---
 

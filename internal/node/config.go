@@ -57,10 +57,17 @@ func LoadNodeConfig(path string) (*NodeConfigComplete, error) {
 			path, config.Version, api.NodeConfigVersionV1Alpha1)
 	}
 
+	return CompleteNodeConfig(config)
+}
+
+// CompleteNodeConfig validates the services and labels and parses the Datalog
+// of a decoded node config. Shared with the mobile FFI so both report the same
+// errors.
+func CompleteNodeConfig(config api.NodeConfig) (*NodeConfigComplete, error) {
 	// The control plane attests this set at enrollment, so a malformed label
 	// must stop the node here rather than surface as a refused enrollment.
 	if err := api.ValidateLabels(config.Labels); err != nil {
-		return nil, fmt.Errorf("invalid node config %s: %w", path, err)
+		return nil, fmt.Errorf("invalid labels: %w", err)
 	}
 
 	complete := &NodeConfigComplete{

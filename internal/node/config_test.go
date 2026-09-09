@@ -18,6 +18,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/google/sam/api"
 )
 
 func TestLoadNodeConfig(t *testing.T) {
@@ -313,5 +315,24 @@ labels:
 				tt.verify(t, config)
 			}
 		})
+	}
+}
+
+func TestCompleteNodeConfig(t *testing.T) {
+	got, err := CompleteNodeConfig(api.NodeConfig{
+		Services:    []api.ServiceConfig{{Type: "mcp", Name: "phone-sensors"}},
+		Attenuation: api.Attenuation{Checks: []string{`check if label("region", "eu-west-1")`}},
+	})
+	if err != nil {
+		t.Fatalf("CompleteNodeConfig() error = %v", err)
+	}
+	if len(got.Checks) != 1 || len(got.Services) != 1 {
+		t.Fatalf("got %d checks and %d services, want 1 and 1", len(got.Checks), len(got.Services))
+	}
+
+	if _, err := CompleteNodeConfig(api.NodeConfig{
+		Attenuation: api.Attenuation{Checks: []string{"not datalog"}},
+	}); err == nil {
+		t.Fatal("CompleteNodeConfig() with invalid Datalog: want error, got nil")
 	}
 }

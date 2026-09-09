@@ -145,7 +145,12 @@ var preflightMethodsUnsupportedByPassThrough = map[string]bool{
 // client to finish reading the last response and hang up on its own. See the
 // comment on the drain logic in HandleStreamPassThrough for why this wait
 // exists at all.
-const passThroughDrainTimeout = 5 * time.Second
+//
+// A var, not a const, so a test can shrink it - the countdown only starts
+// once the backend leg is done, so shrinking it does not affect an
+// in-progress exchange, only how long a stalled client is tolerated for
+// after that.
+var passThroughDrainTimeout = 5 * time.Second
 
 // HandleStreamPassThrough connects to the backend and proxies JSON-RPC messages.
 func (m *MCPService) HandleStreamPassThrough(s network.Stream) {
@@ -201,8 +206,10 @@ func (m *MCPService) HandleStreamPassThrough(s network.Stream) {
 	// the read side alone. The client leg - the client itself finishing the
 	// read and hanging up, or a genuine transport error - is what triggers
 	// the final s.Close() at the top of this function. passThroughDrainTimeout
-	// bounds that wait so a client that never hangs up can't leak the stream
-	// forever.
+	// bounds that wait, but only once the backend leg is actually done
+	// (backendDone below) - it is not a cap on the whole exchange, or a
+	// slow-but-healthy session would be killed mid-flight for no better
+	// reason than having taken a while.
 	//
 	// clientErrc is buffered for 2, not 1: a client write failure below is
 	// also a client-leg error (the stream to the client is dead, so there is
@@ -210,8 +217,10 @@ func (m *MCPService) HandleStreamPassThrough(s network.Stream) {
 	// unlucky interleaving where the main select has already consumed one
 	// value could otherwise leave the second sender blocked forever.
 	clientErrc := make(chan error, 2)
+	backendDone := make(chan struct{})
 
 	go func() {
+		defer close(backendDone)
 		for {
 			msg, err := backendConn.Read(ctx)
 			if err != nil {
@@ -253,6 +262,15 @@ func (m *MCPService) HandleStreamPassThrough(s network.Stream) {
 			}
 		}
 	}()
+
+	// No timeout here: the exchange runs for as long as both legs are
+	// making progress. Only once the backend leg ends (backendDone) does a
+	// bounded wait for the client to also finish begin, below.
+	select {
+	case <-clientErrc:
+		return
+	case <-backendDone:
+	}
 
 	select {
 	case <-clientErrc:

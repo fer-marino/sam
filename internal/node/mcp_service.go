@@ -140,6 +140,18 @@ var preflightMethodsUnsupportedByPassThrough = map[string]bool{
 	"server/discover": true,
 }
 
+// passThroughDrainTimeout bounds how long HandleStreamPassThrough keeps a
+// client-facing stream open after the backend leg has ended, waiting for the
+// client to finish reading the last response and hang up on its own. See the
+// comment on the drain logic in HandleStreamPassThrough for why this wait
+// exists at all.
+//
+// A var, not a const, so a test can shrink it - the countdown only starts
+// once the backend leg is done, so shrinking it does not affect an
+// in-progress exchange, only how long a stalled client is tolerated for
+// after that.
+var passThroughDrainTimeout = 5 * time.Second
+
 // HandleStreamPassThrough connects to the backend and proxies JSON-RPC messages.
 func (m *MCPService) HandleStreamPassThrough(s network.Stream) {
 	defer func() {
@@ -148,23 +160,14 @@ func (m *MCPService) HandleStreamPassThrough(s network.Stream) {
 		}
 	}()
 
-	var backendTransport mcp.Transport
-	var closeTransport func()
-
 	backendTransport, err := m.backendTransport()
 	if err != nil {
 		logger.Errorf("[MCPService] %s: %v", m.info.Name, err)
 		return
 	}
-	closeTransport = func() {} // fresh per stream for URL; shared bridge is never closed
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	defer func() {
-		if closeTransport != nil {
-			closeTransport()
-		}
-	}()
 
 	backendConn, err := backendTransport.Connect(ctx)
 	if err != nil {
@@ -180,49 +183,98 @@ func (m *MCPService) HandleStreamPassThrough(s network.Stream) {
 		return
 	}
 
-	// Dumb pipe: Proxy JSON-RPC messages between client and backend
-	errc := make(chan error, 2)
+	// Dumb pipe: proxy JSON-RPC messages between client and backend.
+	//
+	// The two legs are not symmetric on shutdown. A backend answering one
+	// request and then hanging up (a clean EOF, typical of a one-shot
+	// HTTP-style backend transport) is normal completion, not a failure of
+	// the client-facing side of the pipe - but closing s in reaction to it
+	// used to tear down both directions immediately (network.Stream.Close
+	// implies CancelRead), including the read side and, per that method's
+	// own documented contract, without waiting for the response this same
+	// goroutine had just handed to Write to actually reach the peer. Close
+	// "does not guarantee receipt of the data"; the documented safe sequence
+	// is CloseWrite, then wait for the peer to finish reading (or hang up),
+	// then Close. That race is the root cause of google/sam#375: the
+	// producer's write reports success, but the immediate teardown right
+	// behind it can still lose the response in flight, and the consumer
+	// sees EOF instead.
+	//
+	// So the backend leg ending only half-closes our write side to the
+	// client (CloseWrite: no more responses are coming, but nothing already
+	// in flight is discarded) and stops relaying backend->client; it leaves
+	// the read side alone. The client leg - the client itself finishing the
+	// read and hanging up, or a genuine transport error - is what triggers
+	// the final s.Close() at the top of this function. passThroughDrainTimeout
+	// bounds that wait, but only once the backend leg is actually done
+	// (backendDone below) - it is not a cap on the whole exchange, or a
+	// slow-but-healthy session would be killed mid-flight for no better
+	// reason than having taken a while.
+	//
+	// clientErrc is buffered for 2, not 1: a client write failure below is
+	// also a client-leg error (the stream to the client is dead, so there is
+	// nothing left to drain for), and with both goroutines able to send, an
+	// unlucky interleaving where the main select has already consumed one
+	// value could otherwise leave the second sender blocked forever.
+	clientErrc := make(chan error, 2)
+	backendDone := make(chan struct{})
+
+	go func() {
+		defer close(backendDone)
+		for {
+			msg, err := backendConn.Read(ctx)
+			if err != nil {
+				logger.Debugf("[MCPService] %s: backend read error: %v", m.info.Name, err)
+				if cwErr := s.CloseWrite(); cwErr != nil {
+					logger.Debugf("[MCPService] %s: failed to close write side to client: %v", m.info.Name, cwErr)
+				}
+				return
+			}
+			if err := clientConn.Write(ctx, msg); err != nil {
+				logger.Debugf("[MCPService] %s: client write error: %v", m.info.Name, err)
+				clientErrc <- err
+				return
+			}
+		}
+	}()
 
 	go func() {
 		for {
 			msg, err := clientConn.Read(ctx)
 			if err != nil {
 				logger.Debugf("[MCPService] %s: client read error: %v", m.info.Name, err)
-				errc <- err
+				clientErrc <- err
 				return
 			}
 			if req, ok := msg.(*jsonrpc.Request); ok && preflightMethodsUnsupportedByPassThrough[req.Method] {
 				resp := &jsonrpc.Response{ID: req.ID, Error: &jsonrpc.Error{Code: jsonrpc.CodeMethodNotFound, Message: req.Method + " is not supported by this pass-through proxy"}}
 				if werr := clientConn.Write(ctx, resp); werr != nil {
 					logger.Debugf("[MCPService] %s: failed to reject %s: %v", m.info.Name, req.Method, werr)
-					errc <- werr
+					clientErrc <- werr
 					return
 				}
 				continue
 			}
 			if err := backendConn.Write(ctx, msg); err != nil {
 				logger.Debugf("[MCPService] %s: backend write error: %v", m.info.Name, err)
-				errc <- err
+				clientErrc <- err
 				return
 			}
 		}
 	}()
 
-	go func() {
-		for {
-			msg, err := backendConn.Read(ctx)
-			if err != nil {
-				logger.Debugf("[MCPService] %s: backend read error: %v", m.info.Name, err)
-				errc <- err
-				return
-			}
-			if err := clientConn.Write(ctx, msg); err != nil {
-				logger.Debugf("[MCPService] %s: client write error: %v", m.info.Name, err)
-				errc <- err
-				return
-			}
-		}
-	}()
+	// No timeout here: the exchange runs for as long as both legs are
+	// making progress. Only once the backend leg ends (backendDone) does a
+	// bounded wait for the client to also finish begin, below.
+	select {
+	case <-clientErrc:
+		return
+	case <-backendDone:
+	}
 
-	<-errc
+	select {
+	case <-clientErrc:
+	case <-time.After(passThroughDrainTimeout):
+		logger.Debugf("[MCPService] %s: client did not hang up within %v of the backend finishing; closing", m.info.Name, passThroughDrainTimeout)
+	}
 }

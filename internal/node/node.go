@@ -520,6 +520,7 @@ func (n *SamNode) Start(ctx context.Context) error {
 
 	n.services = NewServiceRegistry(n.DHT)
 	n.services.reprovideNow = n.triggerReprovide
+	n.services.SetBackendProbeTimeout(n.config.BackendProbeTimeout)
 
 	var authenticated bool
 	var fatalAuthErr error

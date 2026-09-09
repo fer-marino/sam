@@ -21,6 +21,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/sam/api"
 	"github.com/ipfs/go-cid"
@@ -273,4 +274,83 @@ func TestServiceRegistry_ReprovideResumesWhenBackendRecovers(t *testing.T) {
 	if len(dht.calls) != 2 {
 		t.Errorf("Provide called %d times after recovery, want 2 (name + type CID)", len(dht.calls))
 	}
+}
+
+// slowProbingService is a backendProber whose Probe blocks until the given
+// delay elapses or the context is cancelled first, whichever comes first -
+// unlike probingService, it actually respects the probe deadline, which is
+// what a real command-spawned backend with a slow cold-start does.
+type slowProbingService struct {
+	*fakeService
+	delay time.Duration
+}
+
+func newSlowProbingSvc(name string, delay time.Duration) *slowProbingService {
+	return &slowProbingService{
+		fakeService: newFakeSvc(name, api.ServiceType_SERVICE_TYPE_MCP),
+		delay:       delay,
+	}
+}
+
+func (p *slowProbingService) Probe(ctx context.Context) error {
+	select {
+	case <-time.After(p.delay):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// The bug behind #376: dhtProbeTimeout was a hard-coded 2s with no way to
+// raise it, so a backend whose own cold-start cost alone exceeds that -
+// measured in practice for moderately-featured MCP server stacks - could
+// never be advertised on its first registration. SetBackendProbeTimeout
+// (wired from --backend-probe-timeout) is the fix: the same slow backend
+// must fail to advertise under the default and succeed once given more time.
+func TestServiceRegistry_BackendProbeTimeoutIsConfigurable(t *testing.T) {
+	const probeDelay = 60 * time.Millisecond
+
+	t.Run("default timeout is too short for a slow backend", func(t *testing.T) {
+		dht := &fakeDHT{}
+		r := NewServiceRegistry(dht)
+		r.SetBackendProbeTimeout(10 * time.Millisecond) // shorter than probeDelay
+
+		svc := newSlowProbingSvc("slow", probeDelay)
+		if err := r.Register(context.Background(), svc); err != nil {
+			t.Fatalf("Register: %v", err)
+		}
+		if len(dht.calls) != 0 {
+			t.Errorf("Provide called %d times for a backend slower than the probe timeout, want 0", len(dht.calls))
+		}
+	})
+
+	t.Run("raising the timeout lets the same backend advertise", func(t *testing.T) {
+		dht := &fakeDHT{}
+		r := NewServiceRegistry(dht)
+		r.SetBackendProbeTimeout(probeDelay * 5) // comfortably longer than probeDelay
+
+		svc := newSlowProbingSvc("slow", probeDelay)
+		if err := r.Register(context.Background(), svc); err != nil {
+			t.Fatalf("Register: %v", err)
+		}
+		if len(dht.calls) != 2 {
+			t.Errorf("Provide called %d times once given enough time to probe, want 2 (name + type CID)", len(dht.calls))
+		}
+	})
+
+	t.Run("NewServiceRegistry defaults to dhtProbeTimeout unchanged", func(t *testing.T) {
+		r := NewServiceRegistry(&fakeDHT{})
+		if got := r.probeTimeout(); got != dhtProbeTimeout {
+			t.Errorf("default probe timeout = %v, want %v (unchanged default behaviour)", got, dhtProbeTimeout)
+		}
+	})
+
+	t.Run("SetBackendProbeTimeout ignores zero and negative durations", func(t *testing.T) {
+		r := NewServiceRegistry(&fakeDHT{})
+		r.SetBackendProbeTimeout(0)
+		r.SetBackendProbeTimeout(-1 * time.Second)
+		if got := r.probeTimeout(); got != dhtProbeTimeout {
+			t.Errorf("probe timeout after no-op sets = %v, want unchanged %v", got, dhtProbeTimeout)
+		}
+	})
 }

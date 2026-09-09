@@ -38,7 +38,14 @@ type backendProber interface {
 	Probe(ctx context.Context) error
 }
 
-// dhtProbeTimeout bounds one backend probe before advertising.
+// dhtProbeTimeout is the default bound on one backend probe before
+// advertising, used when a ServiceRegistry isn't given an explicit
+// BackendProbeTimeout (see Options.BackendProbeTimeout / --backend-probe-
+// timeout). Command-spawned backends (sam-node.yaml's `command`, launched as
+// a local subprocess) can need longer than this to answer their first
+// request - a moderately-featured interpreted-language MCP server's own
+// import/startup cost alone can exceed 2s - so this is a floor, not
+// something every backend is expected to meet.
 const dhtProbeTimeout = 2 * time.Second
 
 // advertisable reports whether a service is fit to be published to the DHT.
@@ -49,12 +56,12 @@ const dhtProbeTimeout = 2 * time.Second
 // listed by discover_remote_services and only failed later, at initialize, in
 // the caller's face. Advertising is a claim the node makes on the backend's
 // behalf, so it is the node that should verify it.
-func advertisable(ctx context.Context, svc Service) error {
+func advertisable(ctx context.Context, svc Service, probeTimeout time.Duration) error {
 	prober, ok := svc.(backendProber)
 	if !ok {
 		return nil
 	}
-	probeCtx, cancel := context.WithTimeout(ctx, dhtProbeTimeout)
+	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 	return prober.Probe(probeCtx)
 }
@@ -69,13 +76,38 @@ type ServiceRegistry struct {
 	// registered after the loop last ran does not wait a whole interval to be
 	// advertised. Optional; nil outside a running node.
 	reprovideNow func()
+
+	// backendProbeTimeout bounds each backend probe in advertisable. Defaults
+	// to dhtProbeTimeout; override with SetBackendProbeTimeout.
+	backendProbeTimeout time.Duration
 }
 
 func NewServiceRegistry(d dhtProvider) *ServiceRegistry {
 	return &ServiceRegistry{
-		services: map[string]Service{},
-		dht:      d,
+		services:            map[string]Service{},
+		dht:                 d,
+		backendProbeTimeout: dhtProbeTimeout,
 	}
+}
+
+// SetBackendProbeTimeout overrides the default backend probe timeout
+// (dhtProbeTimeout). A zero or negative duration is a no-op, so callers can
+// pass an unset Options.BackendProbeTimeout straight through without an
+// explicit zero-check.
+func (r *ServiceRegistry) SetBackendProbeTimeout(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.backendProbeTimeout = d
+}
+
+// probeTimeout returns the current backend probe timeout.
+func (r *ServiceRegistry) probeTimeout() time.Duration {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.backendProbeTimeout
 }
 
 // Register initialises a service, advertises it on the DHT, and inserts it
@@ -104,7 +136,7 @@ func (r *ServiceRegistry) Register(ctx context.Context, svc Service) error {
 		return err
 	}
 
-	probeErr := advertisable(ctx, svc)
+	probeErr := advertisable(ctx, svc, r.probeTimeout())
 	if probeErr != nil {
 		logger.Warnf("[ServiceRegistry] Registered %s/%s but not advertising it: backend did not answer: %v", info.Type, info.Name, probeErr)
 	} else {
@@ -229,7 +261,7 @@ Loop:
 			}()
 
 			info := svc.Info()
-			if err := advertisable(ctx, svc); err != nil {
+			if err := advertisable(ctx, svc, r.probeTimeout()); err != nil {
 				withheld.Add(1)
 				// On shutdown every service fails this way, and saying so
 				// would blame backends for the node stopping.

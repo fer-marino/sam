@@ -188,3 +188,15 @@ func mintMockBiscuit(t *testing.T, peerID string, priv ed25519.PrivateKey, role 
 	}
 	return biscuitBytes
 }
+
+// api.Attenuation carries only yaml tags; this pins the case-insensitive JSON
+// match, since a silent miss would drop the node's local limits.
+func TestMobileConfigDecodesAttenuation(t *testing.T) {
+	var config MobileConfig
+	if err := json.Unmarshal([]byte(`{"attenuation":{"rules":["r"],"policies":["p"],"checks":["c"]}}`), &config); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if len(config.Attenuation.Rules) != 1 || len(config.Attenuation.Policies) != 1 || len(config.Attenuation.Checks) != 1 {
+		t.Fatalf("got %+v, want one statement of each kind", config.Attenuation)
+	}
+}

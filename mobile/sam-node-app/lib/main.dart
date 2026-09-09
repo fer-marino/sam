@@ -101,9 +101,16 @@ class _NodeControlPageState extends State<NodeControlPage> {
   final _externalMcpNameController = TextEditingController();
   final _externalMcpDescController = TextEditingController();
 
+  // Local attenuation, one Datalog statement per line. Persisted so it
+  // survives a relaunch, like the enrolled labels.
+  static const _attenuationFile = 'attenuation.json';
+  final _attenuationRulesController = TextEditingController();
+  final _attenuationPoliciesController = TextEditingController();
+  final _attenuationChecksController = TextEditingController();
+
   late SamDartMcpServer _embeddedMcpServer;
   bool _starting = false;
-  int _selectedTab = 0; // 0 = Dashboard, 1 = Services
+  int _selectedTab = 0; // 0 = Dashboard, 1 = Services, 2 = Attenuation
 
   @override
   void initState() {
@@ -126,6 +133,9 @@ class _NodeControlPageState extends State<NodeControlPage> {
     _externalMcpUrlController.dispose();
     _externalMcpNameController.dispose();
     _externalMcpDescController.dispose();
+    _attenuationRulesController.dispose();
+    _attenuationPoliciesController.dispose();
+    _attenuationChecksController.dispose();
     super.dispose();
   }
 
@@ -133,6 +143,7 @@ class _NodeControlPageState extends State<NodeControlPage> {
     final appDir = await getApplicationDocumentsDirectory();
     final dataDir = '${appDir.path}/sam_data';
     final enrolled = _samLib.isEnrolled(dataDir);
+    await _loadAttenuation(dataDir);
     setState(() {
       _isEnrolled = enrolled;
       if (enrolled) {
@@ -141,6 +152,39 @@ class _NodeControlPageState extends State<NodeControlPage> {
         _nodeID = _samLib.getNodeID() ?? '';
       }
     });
+  }
+
+  List<String> _splitStatements(String text) => text
+      .split('\n')
+      .map((line) => line.trim())
+      .where((line) => line.isNotEmpty)
+      .toList();
+
+  Future<void> _loadAttenuation(String dataDir) async {
+    final file = File('$dataDir/$_attenuationFile');
+    if (!await file.exists()) return;
+    try {
+      final saved =
+          jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+      String join(String key) =>
+          saved[key] is List ? (saved[key] as List).join('\n') : '';
+      _attenuationRulesController.text = join('rules');
+      _attenuationPoliciesController.text = join('policies');
+      _attenuationChecksController.text = join('checks');
+    } catch (e) {
+      debugPrint('DEBUG: Failed to read attenuation config: $e');
+    }
+  }
+
+  Future<void> _saveAttenuation(
+      String dataDir, Map<String, List<String>> attenuation) async {
+    try {
+      await Directory(dataDir).create(recursive: true);
+      await File('$dataDir/$_attenuationFile')
+          .writeAsString(jsonEncode(attenuation));
+    } catch (e) {
+      debugPrint('DEBUG: Failed to save attenuation config: $e');
+    }
   }
 
   String _generateCodeVerifier() {
@@ -678,6 +722,13 @@ class _NodeControlPageState extends State<NodeControlPage> {
         },
     ];
 
+    final attenuation = {
+      'rules': _splitStatements(_attenuationRulesController.text),
+      'policies': _splitStatements(_attenuationPoliciesController.text),
+      'checks': _splitStatements(_attenuationChecksController.text),
+    };
+    await _saveAttenuation(dataDir, attenuation);
+
     final err = _samLib.start({
       'dataDir': dataDir,
       'controlPlaneURL': _controlPlaneController.text,
@@ -688,6 +739,7 @@ class _NodeControlPageState extends State<NodeControlPage> {
       'enableRelay': false,
       'labels': _labelsController.text.trim(),
       'services': services,
+      if (attenuation.values.any((l) => l.isNotEmpty)) 'attenuation': attenuation,
     });
 
     if (err != null) {
@@ -787,7 +839,11 @@ class _NodeControlPageState extends State<NodeControlPage> {
     return Scaffold(
       appBar: AppBar(title: const Text('SAM Node Mobile')),
       body: _isEnrolled == true
-          ? (_selectedTab == 0 ? _buildDashboardView() : _buildServicesView())
+          ? (_selectedTab == 0
+              ? _buildDashboardView()
+              : _selectedTab == 1
+                  ? _buildServicesView()
+                  : _buildAttenuationView())
           : _buildBody(),
       bottomNavigationBar: _isEnrolled == true
           ? BottomNavigationBar(
@@ -805,6 +861,10 @@ class _NodeControlPageState extends State<NodeControlPage> {
                 BottomNavigationBarItem(
                   icon: Icon(Icons.electrical_services),
                   label: 'Services',
+                ),
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.shield),
+                  label: 'Attenuation',
                 ),
               ],
             )
@@ -937,6 +997,86 @@ class _NodeControlPageState extends State<NodeControlPage> {
           ],
         ),
       );
+  }
+
+  Widget _buildAttenuationView() {
+    final bool isRunning = _running;
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Limit Who May Call This Node',
+                      style:
+                          TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                  const SizedBox(height: 6),
+                  const Text(
+                    'Datalog attenuation, one statement per line. Read when '
+                    'the node starts; fill these fields before pressing '
+                    'Start. A syntax error fails the start.',
+                    style: TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                  const SizedBox(height: 10),
+                  _buildAttenuationField(
+                    controller: _attenuationRulesController,
+                    label: 'Rules',
+                    hint: 'time(2026-06-30T00:00:00Z) <- true;',
+                    isRunning: isRunning,
+                  ),
+                  const SizedBox(height: 10),
+                  _buildAttenuationField(
+                    controller: _attenuationPoliciesController,
+                    label: 'Policies',
+                    hint: 'deny if user("untrusted_sub_id");',
+                    isRunning: isRunning,
+                  ),
+                  const SizedBox(height: 10),
+                  _buildAttenuationField(
+                    controller: _attenuationChecksController,
+                    label: 'Checks',
+                    hint: 'check if label("region", "eu-west-1");',
+                    isRunning: isRunning,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Phone keyboards autocorrect and capitalise Datalog into something the
+  // parser rejects.
+  Widget _buildAttenuationField({
+    required TextEditingController controller,
+    required String label,
+    required String hint,
+    required bool isRunning,
+  }) {
+    return TextFormField(
+      controller: controller,
+      enabled: !isRunning,
+      maxLines: 4,
+      keyboardType: TextInputType.multiline,
+      autocorrect: false,
+      enableSuggestions: false,
+      textCapitalization: TextCapitalization.none,
+      style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+      decoration: InputDecoration(
+        labelText: label,
+        hintText: hint,
+        hintStyle: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+        alignLabelWithHint: true,
+        border: const OutlineInputBorder(),
+      ),
+    );
   }
 
   Widget _buildEnrollmentView() {

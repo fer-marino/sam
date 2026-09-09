@@ -64,6 +64,9 @@ type MobileConfig struct {
 	// Services this node exposes, declared at start like the node config
 	// file's services block; there is no runtime registration.
 	Services []MobileService `json:"services,omitempty"`
+	// Local attenuation, same shape as the config file's block. Go matches
+	// these keys to the yaml-tagged fields case-insensitively.
+	Attenuation api.Attenuation `json:"attenuation"`
 }
 
 // MobileService is one statically declared service.
@@ -187,18 +190,24 @@ func StartNode(configJSON string) error {
 
 	// Create and initialize the node
 	var services []api.ServiceConfig
-	for i, svc := range config.Services {
-		if err := api.ValidateServiceFormat(svc.Type + "://" + svc.Name); err != nil {
-			_ = store.Close()
-			activeStore = nil
-			return fmt.Errorf("invalid service at index %d: %w", i, err)
-		}
+	for _, svc := range config.Services {
 		services = append(services, api.ServiceConfig{
 			Type:        svc.Type,
 			Name:        svc.Name,
 			Description: svc.Description,
 			TargetURL:   svc.TargetURL,
 		})
+	}
+
+	nodeConfig, err := node.CompleteNodeConfig(api.NodeConfig{
+		Attenuation: config.Attenuation,
+		Services:    services,
+		Labels:      labels,
+	})
+	if err != nil {
+		_ = store.Close()
+		activeStore = nil
+		return err
 	}
 
 	samNode, err := node.NewSamNode(node.Options{
@@ -212,7 +221,7 @@ func StartNode(configJSON string) error {
 		ListenAddrs:          listenAddrs,
 		EnableRelay:          config.EnableRelay,
 		AllowLoopback:        config.AllowLoopback,
-		NodeConfig:           &node.NodeConfigComplete{Services: services, Labels: labels},
+		NodeConfig:           nodeConfig,
 		MonitorBootstrap:     2 * time.Minute,
 		MonitorInterval:      1 * time.Minute,
 		AutoRelayMinInterval: 30 * time.Second,

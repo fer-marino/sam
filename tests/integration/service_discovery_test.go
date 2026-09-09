@@ -54,7 +54,7 @@ func TestServiceDiscovery(t *testing.T) {
 		"--discovery-interval", "100ms",
 		"--bind-addr", "127.0.0.1:0",
 		"--api-token-path", tokenPath(t, apiToken),
-		"--config", writeServicesConfig(t, homeA, svcDecl{Type: "mcp", Name: serviceName, TargetURL: mockServer.URL}),
+		"--config", writeNodeConfig(t, homeA, nil, svcDecl{Type: "mcp", Name: serviceName, TargetURL: mockServer.URL}),
 	)
 
 	// Start Node B
@@ -155,7 +155,7 @@ func TestServiceDiscoveryStreaming(t *testing.T) {
 		"--discovery-interval", "100ms",
 		"--bind-addr", "127.0.0.1:0",
 		"--api-token-path", tokenPath(t, apiToken),
-		"--config", writeServicesConfig(t, homeA, svcDecl{Type: "mcp", Name: serviceName, TargetURL: mockServer.URL}),
+		"--config", writeNodeConfig(t, homeA, nil, svcDecl{Type: "mcp", Name: serviceName, TargetURL: mockServer.URL}),
 	)
 
 	// Start Node B

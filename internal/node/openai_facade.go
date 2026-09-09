@@ -140,7 +140,7 @@ func newOpenAIFacade(node *SamNode, egress http.Handler) *openAIFacade {
 		isRevoked: func(peerID string) bool {
 			return node.revokedPeers != nil && node.revokedPeers.Contains(peerID)
 		},
-		localLabels: func() map[string]string { return node.config.Labels },
+		localLabels: node.labels,
 		peerLabels: func(peerID string) map[string]string {
 			if node.Discovery == nil {
 				return nil

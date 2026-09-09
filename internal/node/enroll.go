@@ -86,7 +86,7 @@ func (n *SamNode) enrollHTTP(ctx context.Context, controlPlaneURL, jwt string, p
 		PeerId:        peerID.String(),
 		PublicKey:     pubBytes,
 		RequestedRole: n.config.RequiredRole,
-		Labels:        n.config.Labels, // validated at startup
+		Labels:        n.labels(),
 	}
 	data, err := proto.Marshal(req)
 	if err != nil {
@@ -234,7 +234,7 @@ func (n *SamNode) EnrollBootstrap(ctx context.Context, controlPlaneURL string, b
 		PeerId:             n.Host.ID().String(),
 		PublicKey:          pubBytes,
 		RequestedRole:      n.config.RequiredRole,
-		Labels:             n.config.Labels, // validated at startup
+		Labels:             n.labels(),
 		Timestamp:          enrollTS,
 		ChallengeSignature: enrollSig,
 	}

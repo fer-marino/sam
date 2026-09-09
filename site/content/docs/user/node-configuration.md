@@ -18,12 +18,17 @@ SAM_API_TOKEN="secret" sam-node run --config ./sam-node.yaml
 
 ### Configuration Schema
 
-The `sam-node.yaml` file supports defining local **Services** and local **Attenuation** security rules.
+The `sam-node.yaml` file supports declaring the node's **Labels**, its local **Services**, and local **Attenuation** security rules.
 
 ```yaml
 version: "v1alpha1"
 
-# 1. Define Local Services
+# 1. Declare this node's operator labels (see section 4)
+labels:
+  region: us-east-1
+  team: platform
+
+# 2. Define Local Services
 services:
   # Example: Expose a local CLI MCP server to the mesh (stdio subprocess)
   - type: mcp
@@ -43,7 +48,7 @@ services:
     description: "DeepSeek local inference proxy"
     target_url: "http://localhost:11434"
 
-# 2. Define Local Security Identity (Zero Trust)
+# 3. Define Local Security Identity (Zero Trust)
 attenuation:
   rules:
     # Example: Inject custom Datalog facts asserting local node state
@@ -107,11 +112,16 @@ SAM supports attested key=value labels (e.g. `region`, `team`) so a request neve
 
 ### Declaring labels (provider)
 
-Start the node with its operator-declared labels, a comma-separated `key=value` list:
+Declare the node's operator labels in its configuration file:
 
-```bash
-sam-node run --labels region=us-east-1,team=platform ...
+```yaml
+version: "v1alpha1"
+labels:
+  region: us-east-1
+  team: platform
 ```
+
+Both `sam-node join` and `sam-node run` read this file (`--config` is a global flag), so the labels are declared on whichever of them enrols the node. Keys are 1-63 characters of `[a-zA-Z0-9_.-]`; a value must be non-empty, at most 255 characters, and free of `,`, `=` and control characters, since the wire format is a comma-separated `key=value` list. A malformed entry stops the node at startup.
 
 Labels are declared at enrollment and **attested by the control plane**, but only the ones a role permits. Set `allowed_labels` on the node's role (see [control plane configuration](../control-plane-configuration/)); a role granting none means the node can declare none, and enrollment is refused if it tries. This applies to all three enrollment paths, including bootstrap requests an administrator approves by hand: approving says the identity may join, so the role grant is what says which labels it may carry. The control plane then mints one signed `label(key, value)` fact per declared label into the node's Biscuit. Matching is exact and case-sensitive; an empty value means no claim for that key.
 

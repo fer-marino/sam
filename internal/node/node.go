@@ -152,7 +152,7 @@ type SamNode struct {
 	receivedMsgs         map[string][]string
 	topics               map[string]*pubsub.Topic
 	mu                   sync.Mutex
-	LocalPolicy          *NodeConfigComplete
+	nodeConfig           *NodeConfigComplete
 	revokedPeers         *lru.Cache[string, int64]
 	peerLabelGate        *lru.Cache[string, time.Time]
 	authPeers            sync.Map
@@ -282,7 +282,7 @@ func NewSamNode(cfg Options) (*SamNode, error) {
 		receivedMsgs:         make(map[string][]string),
 		topics:               make(map[string]*pubsub.Topic),
 		authenticatedRouters: make(map[peer.ID]bool),
-		LocalPolicy:          cfg.NodeConfig,
+		nodeConfig:           cfg.NodeConfig,
 		AllowLoopback:        cfg.AllowLoopback,
 		authSuccess:          make(chan struct{}),
 		reprovideTrigger:     make(chan struct{}, 1),
@@ -315,6 +315,16 @@ func NewSamNode(cfg Options) (*SamNode, error) {
 	}
 
 	return node, nil
+}
+
+// labels reports this node's operator-declared labels, validated at load.
+// NewSamNode always leaves nodeConfig non-nil, but tests build SamNode
+// literals directly, so the guard lives here rather than at each caller.
+func (n *SamNode) labels() map[string]string {
+	if n.nodeConfig == nil {
+		return nil
+	}
+	return n.nodeConfig.Labels
 }
 
 // Start initializes the libp2p host, DHT, connects to the routers, and starts runtime components.

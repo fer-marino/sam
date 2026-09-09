@@ -41,9 +41,10 @@ type ServiceConfig struct {
 
 // NodeConfig defines the optional attenuation rules and static services for a specific SAM Node.
 type NodeConfig struct {
-	Version     string          `yaml:"version"`
-	Attenuation Attenuation     `yaml:"attenuation"`
-	Services    []ServiceConfig `yaml:"services"`
+	Version     string            `yaml:"version"`
+	Attenuation Attenuation       `yaml:"attenuation"`
+	Services    []ServiceConfig   `yaml:"services"`
+	Labels      map[string]string `yaml:"labels,omitempty"`
 }
 
 // NodeConfigVersionV1Alpha1 is the only node config schema this build understands.

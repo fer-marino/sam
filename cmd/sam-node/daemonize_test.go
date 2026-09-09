@@ -38,7 +38,7 @@ func TestWithoutDaemonizeFlag(t *testing.T) {
 	}
 
 	// A value that merely looks like the flag must survive.
-	got = withoutDaemonizeFlag([]string{"run", "--labels", "mode=--daemonize"})
+	got = withoutDaemonizeFlag([]string{"run", "--log-level", "mode=--daemonize"})
 	if len(got) != 3 {
 		t.Errorf("flag values must not be stripped: got %v", got)
 	}

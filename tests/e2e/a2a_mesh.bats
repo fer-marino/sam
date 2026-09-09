@@ -51,7 +51,7 @@ teardown() {
 
   echo "[$(date +%T)] Starting Node 2 (provider, region=eu) with the echo service"
   mesh_start_node 2 \
-    "--log-level debug --labels region=eu" \
+    "--log-level debug" \
     "tests/e2e/docker/a2a-echo/sam-node-config.yaml"
   mesh_wait_for_log "${MESH_PREFIX}-node-2" "SAM Node Online" 20
   mesh_wait_for_mcp_ready 2 20

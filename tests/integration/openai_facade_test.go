@@ -79,8 +79,8 @@ func TestOpenAIFacadeCUJ(t *testing.T) {
 		"--listen", "/ip4/127.0.0.1/udp/0/quic-v1",
 		"--listen", "/ip4/127.0.0.1/tcp/0",
 		"--discovery-interval", "100ms",
-		"--labels", "region=eu", // exercise the operator label claim end to end
-		"--config", writeServicesConfig(t, homeA, svcDecl{Type: "inference", Name: "test-llm", TargetURL: backend.URL}),
+		// labels exercise the operator label claim end to end
+		"--config", writeNodeConfig(t, homeA, map[string]string{"region": "eu"}, svcDecl{Type: "inference", Name: "test-llm", TargetURL: backend.URL}),
 	)
 	t.Log("Starting Node B (consumer)...")
 	_ = startBackgroundNode(t, nodeBin, hubAddr, homeB,

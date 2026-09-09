@@ -42,7 +42,7 @@ func TestIntegrationStdioDatapath(t *testing.T) {
 	// The stdio service is declared in node A's configuration; there is no
 	// runtime registration.
 	serviceName := "stdio-tool"
-	cfgA := writeServicesConfig(t, homeA, svcDecl{Type: "mcp", Name: serviceName, Command: []string{"cat"}})
+	cfgA := writeNodeConfig(t, homeA, nil, svcDecl{Type: "mcp", Name: serviceName, Command: []string{"cat"}})
 
 	// Start Node A
 	t.Log("Starting Node A...")
@@ -162,7 +162,7 @@ func TestIntegrationHTTPDatapath(t *testing.T) {
 	defer dummyServer.Close()
 
 	serviceName := "http-tool"
-	cfgA := writeServicesConfig(t, homeA, svcDecl{Type: "mcp", Name: serviceName, TargetURL: dummyServer.URL})
+	cfgA := writeNodeConfig(t, homeA, nil, svcDecl{Type: "mcp", Name: serviceName, TargetURL: dummyServer.URL})
 
 	// Start Node A
 	t.Log("Starting Node A...")

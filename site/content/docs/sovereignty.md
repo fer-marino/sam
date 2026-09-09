@@ -134,6 +134,6 @@ When deploying SAM for mission-critical, sovereign agent operations:
 1. **Deploy Dedicated Control Plane Infrastructure:** Use the Helm chart or Kubernetes manifests to launch `sam-control-plane` on your chosen sovereign infrastructure (managed cloud with customer keys, private Kubernetes, or bare metal).
 2. **Maintain Root Cryptographic Key Custody:** Generate, manage, and hold your own Ed25519 root signing keys (via KMS/Cloud EKM or HSMs).
 3. **Use Your Own OIDC Identity Provider:** Point `--issuer` to your internal Keycloak, Dex, or corporate IdP.
-4. **Declare & Attest Sovereignty Labels:** Run nodes with `--labels jurisdiction=eu,region=<your-region>` and configure control plane roles with `allowed_labels`.
+4. **Declare & Attest Sovereignty Labels:** Declare `labels: {jurisdiction: eu, region: <your-region>}` in each node's `sam-node.yaml` and configure control plane roles with `allowed_labels`.
 5. **Enforce Jurisdictional Egress:** Direct agents to specify `X-Sam-Required-Labels: jurisdiction=eu` on all inference and MCP requests to guarantee zero data leakage beyond authorized perimeters.
 6. **Set Local Attenuation Vetoes:** Configure local node `attenuation.policies` to retain final destination-side access control.

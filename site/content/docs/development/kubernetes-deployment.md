@@ -81,7 +81,7 @@ and extra args pass through to helm:
 ./development/deploy-kind-service.sh ~/src/my-service
 # same service as a second, differently-labeled node:
 ./development/deploy-kind-service.sh development/examples/calc-mcp --release-name calc-b \
-  --set-json 'extraArgs=["--discovery-interval=200ms","--labels=region=us-east-1"]'
+  --set-json 'extraArgs=["--discovery-interval=200ms"]' --set config.labels.region=us-east-1
 ```
 
 To write your own service, copy an example folder: a backend listening on a

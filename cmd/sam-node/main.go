@@ -92,7 +92,6 @@ var (
 	apiTokenPathFlag          string
 	bootstrapTokenPathFlag    string
 	clientSecretPathFlag      string
-	labelsFlag                string
 	tlsCertFlag               string
 	tlsKeyFlag                string
 	tlsCAFlag                 string
@@ -259,31 +258,6 @@ func interactiveJoin(ctx context.Context, store *node.Store, targetControlPlane 
 	return jwtStr, info, nil
 }
 
-// parseLabelsFlag parses a comma-separated "key=value" list (see
-// api/labels.go) into a label map; an empty string means no claims.
-func parseLabelsFlag(s string) (map[string]string, error) {
-	if s == "" {
-		return nil, nil
-	}
-	labels := make(map[string]string)
-	for _, part := range strings.Split(s, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		k, v, ok := strings.Cut(part, "=")
-		if !ok {
-			return nil, fmt.Errorf("invalid label %q: expected key=value", part)
-		}
-		key := strings.TrimSpace(k)
-		if _, exists := labels[key]; exists {
-			return nil, fmt.Errorf("duplicate label key %q", key)
-		}
-		labels[key] = strings.TrimSpace(v)
-	}
-	return labels, nil
-}
-
 func main() {
 	rootCmd := &cobra.Command{
 		Use:   "sam-node",
@@ -326,10 +300,6 @@ func main() {
 			clientSecretFlag = resolveDaemonSecret("client-secret", clientSecretPathFlag, "SAM_CLIENT_SECRET")
 			if jwtFlag != "" {
 				logger.Warn("--jwt passes a secret on the command line; prefer --jwt-path")
-			}
-			labels, err := parseLabelsFlag(labelsFlag)
-			if err != nil {
-				logger.Fatalf("Invalid --labels: %v", err)
 			}
 
 			store, err := node.NewStore(resolveDataDir())
@@ -491,7 +461,6 @@ func main() {
 					AutoRelayBackoff:     autoRelayBackoffFlag,
 					RouterConnectTimeout: routerConnectTimeoutFlag,
 					RequiredRole:         api.RoleNode,
-					Labels:               labels,
 					PolicySyncInterval:   policySyncIntervalFlag,
 					DHTProviderAddrTTL:   dhtProviderAddrTTLFlag,
 					DHTMaxRecordAge:      dhtMaxRecordAgeFlag,
@@ -559,7 +528,6 @@ func main() {
 					AutoRelayBackoff:     autoRelayBackoffFlag,
 					RouterConnectTimeout: routerConnectTimeoutFlag,
 					RequiredRole:         api.RoleNode,
-					Labels:               labels,
 					PolicySyncInterval:   policySyncIntervalFlag,
 					DHTProviderAddrTTL:   dhtProviderAddrTTLFlag,
 					DHTMaxRecordAge:      dhtMaxRecordAgeFlag,
@@ -630,7 +598,6 @@ func main() {
 					AutoRelayBackoff:     autoRelayBackoffFlag,
 					RouterConnectTimeout: routerConnectTimeoutFlag,
 					RequiredRole:         api.RoleNode,
-					Labels:               labels,
 					PolicySyncInterval:   policySyncIntervalFlag,
 				})
 				if err != nil {
@@ -746,11 +713,6 @@ func main() {
 				}
 			}
 
-			labels, err := parseLabelsFlag(labelsFlag)
-			if err != nil {
-				logger.Fatalf("Invalid --labels: %v", err)
-			}
-
 			priv := node.GetOrGenerateKey(store)
 			meshNode, err := node.NewSamNode(node.Options{
 				PrivKey:              priv,
@@ -771,7 +733,6 @@ func main() {
 				AutoRelayBackoff:     3 * time.Second,
 				RouterConnectTimeout: routerConnectTimeoutFlag,
 				RequiredRole:         api.RoleNode,
-				Labels:               labels,
 				PolicySyncInterval:   policySyncIntervalFlag,
 			})
 			if err != nil {
@@ -885,7 +846,6 @@ func main() {
 	joinCmd.Flags().StringVar(&bootstrapTokenFlag, "bootstrap-token", "", "Pre-shared bootstrap token for enrollment")
 	joinCmd.Flags().StringVar(&bootstrapTokenPathFlag, "bootstrap-token-path", "", "Path to file containing the bootstrap token (recommended over --bootstrap-token)")
 	runCmd.Flags().StringVar(&apiTokenPathFlag, "api-token-path", "", "Path to file containing the static Bearer token for API authorization (or env SAM_API_TOKEN)")
-	runCmd.Flags().StringVar(&labelsFlag, "labels", "", "Operator-declared key=value labels of this node, comma-separated (e.g. \"region=us-east-1,team=platform\"); empty means no claims")
 	runCmd.Flags().StringVar(&tlsCertFlag, "tls-cert", "", "Path to TLS certificate for sidecar API")
 	runCmd.Flags().StringVar(&tlsKeyFlag, "tls-key", "", "Path to TLS key for sidecar API")
 	runCmd.Flags().StringVar(&tlsCAFlag, "tls-ca", "", "Path to TLS CA for sidecar API mTLS")

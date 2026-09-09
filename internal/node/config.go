@@ -30,6 +30,7 @@ type NodeConfigComplete struct {
 	Checks   []biscuit.Check
 	Rules    []biscuit.Rule
 	Services []api.ServiceConfig
+	Labels   map[string]string
 }
 
 // LoadNodeConfig loads the node configuration from the specified path.
@@ -56,8 +57,15 @@ func LoadNodeConfig(path string) (*NodeConfigComplete, error) {
 			path, config.Version, api.NodeConfigVersionV1Alpha1)
 	}
 
+	// The control plane attests this set at enrollment, so a malformed label
+	// must stop the node here rather than surface as a refused enrollment.
+	if err := api.ValidateLabels(config.Labels); err != nil {
+		return nil, fmt.Errorf("invalid node config %s: %w", path, err)
+	}
+
 	complete := &NodeConfigComplete{
 		Services: config.Services,
+		Labels:   config.Labels,
 	}
 
 	for i, svc := range config.Services {

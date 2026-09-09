@@ -274,14 +274,14 @@ func (n *SamNode) Authorize(rawToken []byte, req RequestContext, pubKey ed25519.
 		return fmt.Errorf("failed to inject target facts: %w", err)
 	}
 
-	if n.LocalPolicy != nil {
-		for _, p := range n.LocalPolicy.Policies {
+	if n.nodeConfig != nil {
+		for _, p := range n.nodeConfig.Policies {
 			authorizer.AddPolicy(p)
 		}
-		for _, c := range n.LocalPolicy.Checks {
+		for _, c := range n.nodeConfig.Checks {
 			authorizer.AddCheck(c)
 		}
-		for _, r := range n.LocalPolicy.Rules {
+		for _, r := range n.nodeConfig.Rules {
 			authorizer.AddRule(r)
 		}
 	}

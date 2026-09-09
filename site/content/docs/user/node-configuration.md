@@ -66,7 +66,7 @@ The `services` array allows you to register endpoints that remote peers in the S
 | `description` | A human-readable description published to the mesh discovery catalogue. |
 | `command` | *(For MCP)* The executable command array to spawn as a local subprocess, speaking MCP over stdio (e.g. `["node", "index.js"]`). Mutually exclusive with `target_url`. |
 | `env` | *(For MCP)* Key-value environment variables passed to the subprocess. |
-| `target_url` | *(For MCP/Inference/A2A)* The upstream URL to proxy traffic to. For `type: mcp`, this points at an already-running Streamable HTTP MCP server - SAM does not spawn or manage its lifecycle, only proxies to it. Mutually exclusive with `command`. |
+| `target_url` | *(For MCP/Inference/A2A)* The upstream URL to proxy traffic to. For `type: mcp`, this points to an already-running Streamable HTTP MCP server; SAM does not spawn or manage its lifecycle, but only proxies to it. Mutually exclusive with `command`. |
 
 ### Inference Service Path Standards & Proxy Routing
 

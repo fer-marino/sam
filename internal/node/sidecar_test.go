@@ -70,7 +70,7 @@ func waitForSocket(t *testing.T, path string) *http.Client {
 func TestSidecarSocketAuthorizesWithoutToken(t *testing.T) {
 	node := &SamNode{
 		BiscuitTimeout: 500 * time.Millisecond,
-		services:       NewServiceRegistry(&fakeDHT{}),
+		services:       NewServiceRegistry(&fakeDHT{}, 0),
 	}
 	socketPath := filepath.Join(t.TempDir(), "sam.sock")
 
@@ -120,7 +120,7 @@ func TestSidecarSocketAuthorizesWithoutToken(t *testing.T) {
 func TestSidecarSocketOnly(t *testing.T) {
 	node := &SamNode{
 		BiscuitTimeout: 500 * time.Millisecond,
-		services:       NewServiceRegistry(&fakeDHT{}),
+		services:       NewServiceRegistry(&fakeDHT{}, 0),
 	}
 	socketPath := filepath.Join(t.TempDir(), "sam.sock")
 
@@ -138,7 +138,7 @@ func TestSidecarSocketOnly(t *testing.T) {
 }
 
 func TestStartSidecarServerRequiresAListener(t *testing.T) {
-	node := &SamNode{services: NewServiceRegistry(&fakeDHT{})}
+	node := &SamNode{services: NewServiceRegistry(&fakeDHT{}, 0)}
 	if _, err := StartSidecarServer(node, "", "", "token", "", "", ""); err == nil {
 		t.Fatal("expected an error when neither a TCP address nor a socket is configured")
 	}
@@ -156,7 +156,7 @@ func TestSidecarSocketFailureKeepsTCPServing(t *testing.T) {
 
 	node := &SamNode{
 		BiscuitTimeout: 500 * time.Millisecond,
-		services:       NewServiceRegistry(&fakeDHT{}),
+		services:       NewServiceRegistry(&fakeDHT{}, 0),
 	}
 	srv, err := StartSidecarServer(node, "127.0.0.1:0", socketPath, "test-token", "", "", "")
 	if err != nil {
@@ -170,7 +170,7 @@ func TestSidecarSocketFailureKeepsTCPServing(t *testing.T) {
 		t.Errorf("BoundSocketPath = %q, want empty after a failed socket", node.BoundSocketPath)
 	}
 
-	socketOnly := &SamNode{services: NewServiceRegistry(&fakeDHT{})}
+	socketOnly := &SamNode{services: NewServiceRegistry(&fakeDHT{}, 0)}
 	if _, err := StartSidecarServer(socketOnly, "", socketPath, "", "", "", ""); err == nil {
 		t.Error("expected an error when the socket is the only configured listener")
 	}
@@ -363,7 +363,7 @@ func TestWithAuth(t *testing.T) {
 func TestSidecarServerAuthEnforcement(t *testing.T) {
 	node := &SamNode{
 		BiscuitTimeout: 500 * time.Millisecond,
-		services:       NewServiceRegistry(&fakeDHT{}),
+		services:       NewServiceRegistry(&fakeDHT{}, 0),
 	}
 	// We use a dummy token
 	token := "test-token"
@@ -453,7 +453,7 @@ func TestSidecarServerAuthEnforcement(t *testing.T) {
 func TestSidecarAuthorizationFallbackScope(t *testing.T) {
 	node := &SamNode{
 		BiscuitTimeout: 500 * time.Millisecond,
-		services:       NewServiceRegistry(&fakeDHT{}),
+		services:       NewServiceRegistry(&fakeDHT{}, 0),
 	}
 	token := "test-token"
 
@@ -546,7 +546,7 @@ func TestRegisterService(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	node := &SamNode{BiscuitTimeout: 500 * time.Millisecond,
-		services: NewServiceRegistry(d),
+		services: NewServiceRegistry(d, 0),
 		DHT:      d,
 	}
 
@@ -575,7 +575,7 @@ func TestRegisterService(t *testing.T) {
 
 func TestUnregisterService(t *testing.T) {
 	node := &SamNode{BiscuitTimeout: 500 * time.Millisecond,
-		services: NewServiceRegistry(&fakeDHT{}),
+		services: NewServiceRegistry(&fakeDHT{}, 0),
 	}
 	node.services.insertService(&testService{info: &api.ServiceInfo{Name: "test-service"}})
 
@@ -601,7 +601,7 @@ func TestHandleDiscoverService(t *testing.T) {
 	defer func() { _ = d.Close() }()
 
 	node := &SamNode{BiscuitTimeout: 500 * time.Millisecond,
-		services:      NewServiceRegistry(d),
+		services:      NewServiceRegistry(d, 0),
 		DHT:           d,
 		Host:          h,
 		BoundHTTPAddr: "127.0.0.1:8080",
@@ -660,7 +660,7 @@ func TestHandleDiscoverService(t *testing.T) {
 
 func TestListLocalServices(t *testing.T) {
 	node := &SamNode{BiscuitTimeout: 500 * time.Millisecond,
-		services: NewServiceRegistry(&fakeDHT{}),
+		services: NewServiceRegistry(&fakeDHT{}, 0),
 	}
 
 	service1 := &api.ServiceInfo{Type: api.ServiceType_SERVICE_TYPE_MCP, Name: "service1"}
@@ -678,7 +678,7 @@ func TestListLocalServices(t *testing.T) {
 
 func TestListLocalServices_TypeFilter(t *testing.T) {
 	node := &SamNode{BiscuitTimeout: 500 * time.Millisecond,
-		services: NewServiceRegistry(&fakeDHT{}),
+		services: NewServiceRegistry(&fakeDHT{}, 0),
 	}
 	mcpA := &api.ServiceInfo{Type: api.ServiceType_SERVICE_TYPE_MCP, Name: "mcp-a"}
 	mcpB := &api.ServiceInfo{Type: api.ServiceType_SERVICE_TYPE_MCP, Name: "mcp-b"}
@@ -777,7 +777,7 @@ func TestServiceKeyToCID_Equivalence(t *testing.T) {
 
 func TestRegisterService_Validation(t *testing.T) {
 	node := &SamNode{BiscuitTimeout: 500 * time.Millisecond,
-		services: NewServiceRegistry(&fakeDHT{}),
+		services: NewServiceRegistry(&fakeDHT{}, 0),
 	}
 
 	tests := []struct {
@@ -858,7 +858,7 @@ func TestDiscoverService_Pagination(t *testing.T) {
 
 	node := &SamNode{
 		BiscuitTimeout: 500 * time.Millisecond,
-		services:       NewServiceRegistry(d),
+		services:       NewServiceRegistry(d, 0),
 		DHT:            d,
 		Host:           h,
 		BoundHTTPAddr:  "127.0.0.1:8080",

@@ -77,44 +77,26 @@ type ServiceRegistry struct {
 	// advertised. Optional; nil outside a running node.
 	reprovideNow func()
 
-	// backendProbeTimeout bounds each backend probe in advertisable. Defaults
-	// to defaultDHTProbeTimeout; override with SetBackendProbeTimeout.
+	// backendProbeTimeout bounds each backend probe in advertisable. Set once
+	// at construction (see NewServiceRegistry); never mutated afterwards, so
+	// reading it needs no lock.
 	backendProbeTimeout time.Duration
 }
 
-func NewServiceRegistry(d dhtProvider) *ServiceRegistry {
+// NewServiceRegistry constructs a registry bounding backend probes by
+// backendProbeTimeout. A zero or negative value falls back to
+// defaultDHTProbeTimeout, so callers can pass an unset
+// Options.BackendProbeTimeout straight through without an explicit
+// zero-check.
+func NewServiceRegistry(d dhtProvider, backendProbeTimeout time.Duration) *ServiceRegistry {
+	if backendProbeTimeout <= 0 {
+		backendProbeTimeout = defaultDHTProbeTimeout
+	}
 	return &ServiceRegistry{
 		services:            map[string]Service{},
 		dht:                 d,
-		backendProbeTimeout: defaultDHTProbeTimeout,
+		backendProbeTimeout: backendProbeTimeout,
 	}
-}
-
-// SetBackendProbeTimeout overrides the default backend probe timeout
-// (defaultDHTProbeTimeout). A zero or negative duration is a no-op, so callers can
-// pass an unset Options.BackendProbeTimeout straight through without an
-// explicit zero-check.
-func (r *ServiceRegistry) SetBackendProbeTimeout(d time.Duration) {
-	if d <= 0 {
-		return
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.backendProbeTimeout = d
-}
-
-// probeTimeout returns the current backend probe timeout, falling back to
-// defaultDHTProbeTimeout for a zero-initialized registry (e.g. a struct
-// literal built directly in a test, bypassing NewServiceRegistry) so it
-// behaves the same as a properly constructed one rather than timing out
-// every probe immediately.
-func (r *ServiceRegistry) probeTimeout() time.Duration {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if r.backendProbeTimeout <= 0 {
-		return defaultDHTProbeTimeout
-	}
-	return r.backendProbeTimeout
 }
 
 // Register initialises a service, advertises it on the DHT, and inserts it
@@ -143,7 +125,7 @@ func (r *ServiceRegistry) Register(ctx context.Context, svc Service) error {
 		return err
 	}
 
-	probeErr := advertisable(ctx, svc, r.probeTimeout())
+	probeErr := advertisable(ctx, svc, r.backendProbeTimeout)
 	if probeErr != nil {
 		logger.Warnf("[ServiceRegistry] Registered %s/%s but not advertising it: backend did not answer: %v", info.Type, info.Name, probeErr)
 	} else {
@@ -268,7 +250,7 @@ Loop:
 			}()
 
 			info := svc.Info()
-			if err := advertisable(ctx, svc, r.probeTimeout()); err != nil {
+			if err := advertisable(ctx, svc, r.backendProbeTimeout); err != nil {
 				withheld.Add(1)
 				// On shutdown every service fails this way, and saying so
 				// would blame backends for the node stopping.

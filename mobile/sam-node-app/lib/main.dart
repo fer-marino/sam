@@ -28,9 +28,17 @@ Future<String?> _isolatedFetchControlPlaneInfo(String url) => Isolate.run(() {
   }
 });
 
-Future<String?> _isolatedEnroll(String dataDir, String controlPlaneText, String jwtText, bool allowLoopback, String labelsText) => Isolate.run(() {
+Future<String?> _isolatedEnroll(String dataDir, String controlPlaneText, String jwtText, bool allowLoopback, String labelsText, String refreshToken) => Isolate.run(() {
   try {
-    return SamNodeLib().enroll(dataDir, controlPlaneText, jwtText, allowLoopback, labelsText);
+    return SamNodeLib().enroll(dataDir, controlPlaneText, jwtText, allowLoopback, labelsText, refreshToken);
+  } catch (e) {
+    return e.toString();
+  }
+});
+
+Future<String?> _isolatedReEnroll(String dataDir, String labelsText) => Isolate.run(() {
+  try {
+    return SamNodeLib().reEnroll(dataDir, labelsText);
   } catch (e) {
     return e.toString();
   }
@@ -73,6 +81,8 @@ class _NodeControlPageState extends State<NodeControlPage> {
   final _controlPlaneController =
       TextEditingController(text: 'https://bananas.sam-mesh.dev');
   final _jwtController = TextEditingController();
+  // Saved by the FFI at enrollment so Re-enroll can skip the browser.
+  String _refreshToken = '';
   final _tokenController = TextEditingController(text: 'secret-token');
   // Labels are attested at enrollment; changing them requires re-enrolling.
   // EnrollNode in the FFI writes them to this file; read back at launch.
@@ -289,7 +299,9 @@ class _NodeControlPageState extends State<NodeControlPage> {
         'response_type': 'code',
         'client_id': clientId,
         'redirect_uri': redirectUri,
-        'scope': 'openid email profile',
+        'scope': 'openid email profile offline_access',
+        'access_type': 'offline',
+        'prompt': 'consent',
         'state': state,
         'code_challenge': challenge,
         'code_challenge_method': 'S256',
@@ -392,6 +404,7 @@ class _NodeControlPageState extends State<NodeControlPage> {
       if (jwt == null) {
         throw Exception('No token received');
       }
+      _refreshToken = tokenData['refresh_token'] ?? '';
 
       setState(() {
         _jwtController.text = jwt;
@@ -459,7 +472,7 @@ class _NodeControlPageState extends State<NodeControlPage> {
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: {
           'client_id': clientId,
-          'scope': 'openid email profile',
+          'scope': 'openid email profile offline_access',
           if (audience != null && audience.isNotEmpty) 'audience': audience,
         },
       );
@@ -516,6 +529,7 @@ class _NodeControlPageState extends State<NodeControlPage> {
           final data = jsonDecode(response.body);
           final jwt = data['id_token'] ?? data['access_token'];
           if (jwt != null) {
+            _refreshToken = data['refresh_token'] ?? '';
             setState(() {
               _jwtController.text = jwt;
               _status = 'Token obtained via Device Flow! Enrolling...';
@@ -632,7 +646,8 @@ class _NodeControlPageState extends State<NodeControlPage> {
     final controlPlaneText = _controlPlaneController.text;
     final jwtText = _jwtController.text;
     final labelsText = _labelsController.text.trim();
-    final err = await _isolatedEnroll(dataDir, controlPlaneText, jwtText, true, labelsText);
+    final err = await _isolatedEnroll(
+        dataDir, controlPlaneText, jwtText, true, labelsText, _refreshToken);
 
     setState(() {
       if (err != null) {
@@ -644,10 +659,27 @@ class _NodeControlPageState extends State<NodeControlPage> {
     });
   }
 
-  // The Config tab has no status card, so surface the outcome inline.
+  // Silent path first: the refresh token saved at enrollment buys a JWT.
+  // Any failure (none saved, expired, revoked) falls back to the browser.
   Future<void> _reEnroll() async {
-    await _loginAndEnroll();
+    setState(() {
+      _loggingIn = true;
+      _status = 'Re-enrolling...';
+    });
+    final appDir = await getApplicationDocumentsDirectory();
+    final err = await _isolatedReEnroll(
+        '${appDir.path}/sam_data', _labelsController.text.trim());
     if (!mounted) return;
+    if (err == null) {
+      setState(() {
+        _loggingIn = false;
+        _status = 'Re-enrolled';
+      });
+    } else {
+      debugPrint('DEBUG: silent re-enroll failed, using the browser: $err');
+      await _loginAndEnroll();
+      if (!mounted) return;
+    }
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text(_status)));
   }
@@ -1032,8 +1064,9 @@ class _NodeControlPageState extends State<NodeControlPage> {
                           TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                   const SizedBox(height: 6),
                   const Text(
-                    'Attested by the control plane. Changing them means '
-                    'logging in again; the node keeps its identity.',
+                    'Attested by the control plane. Re-enroll re-attests '
+                    'them with the saved login; the browser opens only if '
+                    'that session expired. The node keeps its identity.',
                     style: TextStyle(fontSize: 12, color: Colors.grey),
                   ),
                   const SizedBox(height: 10),

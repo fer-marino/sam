@@ -18,13 +18,20 @@ typedef EnrollNodeC = ffi.Pointer<Utf8> Function(
     ffi.Pointer<Utf8> controlPlaneURL,
     ffi.Pointer<Utf8> jwt,
     ffi.Int8 allowLoopback,
-    ffi.Pointer<Utf8> labels);
+    ffi.Pointer<Utf8> labels,
+    ffi.Pointer<Utf8> refreshToken);
 typedef EnrollNodeDart = ffi.Pointer<Utf8> Function(
     ffi.Pointer<Utf8> dataDir,
     ffi.Pointer<Utf8> controlPlaneURL,
     ffi.Pointer<Utf8> jwt,
     int allowLoopback,
-    ffi.Pointer<Utf8> labels);
+    ffi.Pointer<Utf8> labels,
+    ffi.Pointer<Utf8> refreshToken);
+
+typedef ReEnrollNodeC = ffi.Pointer<Utf8> Function(
+    ffi.Pointer<Utf8> dataDir, ffi.Pointer<Utf8> labels);
+typedef ReEnrollNodeDart = ffi.Pointer<Utf8> Function(
+    ffi.Pointer<Utf8> dataDir, ffi.Pointer<Utf8> labels);
 
 typedef FetchControlPlaneInfoJSONC = ffi.Pointer<Utf8> Function(ffi.Pointer<Utf8> controlPlaneURL);
 typedef FetchControlPlaneInfoJSONDart = ffi.Pointer<Utf8> Function(ffi.Pointer<Utf8> controlPlaneURL);
@@ -44,6 +51,7 @@ class SamNodeLib {
   late StopNodeDart _stopNode;
   late GetNodeIDDart _getNodeID;
   late EnrollNodeDart _enrollNode;
+  late ReEnrollNodeDart _reEnrollNode;
   late FetchControlPlaneInfoJSONDart _fetchControlPlaneInfoJSON;
   late IsEnrolledDart _isEnrolled;
   late GetMeshInfoDart _getMeshInfo;
@@ -62,6 +70,7 @@ class SamNodeLib {
     _stopNode = _dylib.lookupFunction<StopNodeC, StopNodeDart>('StopNode');
     _getNodeID = _dylib.lookupFunction<GetNodeIDC, GetNodeIDDart>('GetNodeID');
     _enrollNode = _dylib.lookupFunction<EnrollNodeC, EnrollNodeDart>('EnrollNode');
+    _reEnrollNode = _dylib.lookupFunction<ReEnrollNodeC, ReEnrollNodeDart>('ReEnrollNode');
     _fetchControlPlaneInfoJSON = _dylib.lookupFunction<FetchControlPlaneInfoJSONC, FetchControlPlaneInfoJSONDart>('FetchControlPlaneInfoJSON');
     _isEnrolled = _dylib.lookupFunction<IsEnrolledC, IsEnrolledDart>('IsEnrolled');
     _getMeshInfo = _dylib.lookupFunction<GetMeshInfoC, GetMeshInfoDart>('GetMeshInfo');
@@ -96,18 +105,35 @@ class SamNodeLib {
     return goID;
   }
 
-  String? enroll(String dataDir, String controlPlaneURL, String jwt, bool allowLoopback, String labels) {
+  String? enroll(String dataDir, String controlPlaneURL, String jwt, bool allowLoopback, String labels, String refreshToken) {
     final cDataDir = dataDir.toNativeUtf8();
     final cControlPlaneURL = controlPlaneURL.toNativeUtf8();
     final cJWT = jwt.toNativeUtf8();
     final cAllowLoopback = allowLoopback ? 1 : 0;
     final cLabels = labels.toNativeUtf8();
+    final cRefreshToken = refreshToken.toNativeUtf8();
 
-    final cErr = _enrollNode(cDataDir, cControlPlaneURL, cJWT, cAllowLoopback, cLabels);
+    final cErr = _enrollNode(cDataDir, cControlPlaneURL, cJWT, cAllowLoopback, cLabels, cRefreshToken);
 
     calloc.free(cDataDir);
     calloc.free(cControlPlaneURL);
     calloc.free(cJWT);
+    calloc.free(cLabels);
+    calloc.free(cRefreshToken);
+
+    if (cErr.address == 0) return null;
+    final goErr = cErr.toDartString();
+    _freeString(cErr);
+    return goErr;
+  }
+
+  String? reEnroll(String dataDir, String labels) {
+    final cDataDir = dataDir.toNativeUtf8();
+    final cLabels = labels.toNativeUtf8();
+
+    final cErr = _reEnrollNode(cDataDir, cLabels);
+
+    calloc.free(cDataDir);
     calloc.free(cLabels);
 
     if (cErr.address == 0) return null;

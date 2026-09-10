@@ -339,6 +339,13 @@ func GetNodeID() string {
 // has no equivalent: it re-reads them from its config file on every run.
 const labelsFile = "labels"
 
+func saveEnrolledLabels(dataDir, labels string) error {
+	if err := os.WriteFile(filepath.Join(dataDir, labelsFile), []byte(labels), 0600); err != nil {
+		return fmt.Errorf("failed to save labels: %w", err)
+	}
+	return nil
+}
+
 func loadEnrolledLabels(dataDir string) (map[string]string, error) {
 	raw, err := os.ReadFile(filepath.Join(dataDir, labelsFile))
 	if errors.Is(err, os.ErrNotExist) {
@@ -353,7 +360,7 @@ func loadEnrolledLabels(dataDir string) (map[string]string, error) {
 // EnrollNode enrolls a node. Labels are comma-separated key=value claims,
 // minted into the node's Biscuit here; changing them means enrolling again,
 // which reuses the stored key so the PeerID survives.
-func EnrollNode(dataDir string, controlPlaneURL string, jwt string, allowLoopback bool, labels string) error {
+func EnrollNode(dataDir string, controlPlaneURL string, jwt string, allowLoopback bool, labels string, refreshToken string) error {
 	parsedLabels, err := api.ParseLabels(labels)
 	if err != nil {
 		return fmt.Errorf("invalid labels: %w", err)
@@ -420,12 +427,15 @@ func EnrollNode(dataDir string, controlPlaneURL string, jwt string, allowLoopbac
 
 	// Saved only once the control plane accepted them, so a rejected
 	// re-enrollment cannot leave this file ahead of the Biscuit.
-	if err := os.WriteFile(filepath.Join(dataDir, labelsFile), []byte(labels), 0600); err != nil {
-		return fmt.Errorf("failed to save labels: %w", err)
+	if err := saveEnrolledLabels(dataDir, labels); err != nil {
+		return err
 	}
 
 	if err := store.SaveControlPlaneURL(controlPlaneURL); err != nil {
 		return fmt.Errorf("failed to save control plane URL: %w", err)
+	}
+	if refreshToken != "" {
+		saveRefreshSession(enrollCtx, store, controlPlaneURL, refreshToken)
 	}
 
 	_, _, _, err = node.SyncMeshConfig(enrollCtx, store)
@@ -537,4 +547,54 @@ func CallRemoteTool(peerIDStr string, toolName string, argsJSON string) string {
 	}
 
 	return string(jsonBytes)
+}
+
+// saveRefreshSession stores what ReEnrollNode needs to buy a JWT later.
+// Failures only cost the silent path, so they are logged, not returned.
+func saveRefreshSession(ctx context.Context, store *node.Store, controlPlaneURL, refreshToken string) {
+	if err := store.SaveRefreshToken(refreshToken); err != nil {
+		logger.Warnf("Failed to save refresh token: %v", err)
+		return
+	}
+	info, err := node.FetchControlPlaneInfo(ctx, controlPlaneURL)
+	if err != nil {
+		logger.Warnf("Failed to fetch control plane info for OIDC config: %v", err)
+		return
+	}
+	if err := store.SaveOIDCConfig(info.OidcIssuer, info.ClientId, info.Audience); err != nil {
+		logger.Warnf("Failed to save OIDC config: %v", err)
+	}
+}
+
+// ReEnrollNode re-attests labels without a browser: the refresh token saved
+// at enrollment buys a JWT and the stored key keeps the PeerID. Fails when
+// no token was saved or it expired; the app then falls back to the browser.
+func ReEnrollNode(dataDir string, labels string) error {
+	if activeNode != nil || unauthSrv != nil {
+		return errors.New("stop the node before re-enrolling")
+	}
+	parsedLabels, err := api.ParseLabels(labels)
+	if err != nil {
+		return fmt.Errorf("invalid labels: %w", err)
+	}
+	store, err := node.NewStore(dataDir)
+	if err != nil {
+		return fmt.Errorf("failed to open store: %w", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	meshNode, err := node.NewSamNode(node.Options{
+		PrivKey:       node.GetOrGenerateKey(store),
+		Store:         store,
+		AllowLoopback: true,
+		ListenAddrs:   []string{"/ip4/127.0.0.1/tcp/0"},
+		NodeConfig:    &node.NodeConfigComplete{Labels: parsedLabels},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create node for re-enrollment: %w", err)
+	}
+	if err := meshNode.ReEnrollWithRefreshToken(context.Background()); err != nil {
+		return fmt.Errorf("re-enrollment failed: %w", err)
+	}
+	return saveEnrolledLabels(dataDir, labels)
 }

@@ -26,9 +26,11 @@ import (
 
 	"github.com/biscuit-auth/biscuit-go/v2"
 	"github.com/google/sam/api"
+	"github.com/google/sam/internal/node"
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-msgio"
 	"google.golang.org/protobuf/proto"
 )
@@ -106,7 +108,7 @@ func TestMobileFFILifecycle(t *testing.T) {
 
 	// 2. Mobile Enrollment
 	tmpDir := t.TempDir()
-	err = EnrollNode(tmpDir, httpServer.URL, "dummy-jwt", true, "region=eu-west-1")
+	err = EnrollNode(tmpDir, httpServer.URL, "dummy-jwt", true, "region=eu-west-1", "")
 	if err != nil {
 		t.Fatalf("EnrollNode failed: %v", err)
 	}
@@ -209,10 +211,89 @@ func TestEnrollNodeRejectedLeavesNoLabels(t *testing.T) {
 	defer srv.Close()
 
 	dir := t.TempDir()
-	if err := EnrollNode(dir, srv.URL, "dummy-jwt", true, "region=eu-west-1"); err == nil {
+	if err := EnrollNode(dir, srv.URL, "dummy-jwt", true, "region=eu-west-1", ""); err == nil {
 		t.Fatal("expected enrollment to fail")
 	}
 	if got, err := loadEnrolledLabels(dir); err != nil || got != nil {
 		t.Fatalf("labels must not be persisted after a rejected enrollment, got %v, %v", got, err)
+	}
+}
+
+// Re-enrollment buys a JWT with the stored refresh token and re-attests the
+// new labels under the same PeerID, with no browser involved.
+func TestReEnrollNodeUsesStoredRefreshToken(t *testing.T) {
+	cpPubKey, cpPrivKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var registered api.EnrollRequest
+	var srv *httptest.Server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"issuer": srv.URL, "token_endpoint": srv.URL + "/token"})
+	})
+	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		if r.FormValue("grant_type") != "refresh_token" || r.FormValue("refresh_token") != "stored" {
+			http.Error(w, "bad grant", http.StatusBadRequest)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"id_token": "fresh-jwt", "refresh_token": "rotated"})
+	})
+	mux.HandleFunc("/register", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = proto.Unmarshal(body, &registered)
+		resp := &api.EnrollResponse{
+			BiscuitToken:          mintMockBiscuit(t, registered.PeerId, cpPrivKey, api.RoleNode),
+			ControlPlanePublicKey: cpPubKey,
+			RouterAddresses:       []string{"/ip4/127.0.0.1/tcp/1"},
+		}
+		data, _ := proto.Marshal(resp)
+		w.Header().Set("Content-Type", "application/x-protobuf")
+		_, _ = w.Write(data)
+	})
+	srv = httptest.NewServer(mux)
+	defer srv.Close()
+
+	dir := t.TempDir()
+	store, err := node.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveControlPlaneURL(srv.URL); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveRefreshToken("stored"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveOIDCConfig(srv.URL, "mock-client", ""); err != nil {
+		t.Fatal(err)
+	}
+	want, err := peer.IDFromPublicKey(node.GetOrGenerateKey(store).GetPublic())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = store.Close()
+
+	if err := ReEnrollNode(dir, "region=us-east-1"); err != nil {
+		t.Fatalf("ReEnrollNode failed: %v", err)
+	}
+	if registered.Jwt != "fresh-jwt" || registered.PeerId != want.String() || registered.Labels["region"] != "us-east-1" {
+		t.Fatalf("unexpected enroll request: jwt=%q peer=%q labels=%v", registered.Jwt, registered.PeerId, registered.Labels)
+	}
+	if got, err := loadEnrolledLabels(dir); err != nil || got["region"] != "us-east-1" {
+		t.Fatalf("expected re-enrolled labels persisted, got %v, %v", got, err)
+	}
+	store, err = node.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	if tok, err := store.LoadRefreshToken(); err != nil || tok != "rotated" {
+		t.Fatalf("expected rotated refresh token saved, got %q, %v", tok, err)
+	}
+
+	// Nothing saved means nothing to re-enroll with; the app opens the browser.
+	if err := ReEnrollNode(t.TempDir(), "region=us-east-1"); err == nil {
+		t.Fatal("expected re-enrollment without a refresh token to fail")
 	}
 }

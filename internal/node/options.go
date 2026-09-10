@@ -142,6 +142,9 @@ func (o *Options) Default() {
 	if o.NodeConfig == nil {
 		o.NodeConfig = &NodeConfigComplete{}
 	}
+	if o.BackendProbeTimeout <= 0 {
+		o.BackendProbeTimeout = defaultDHTProbeTimeout
+	}
 }
 
 // Validate verifies that the required options are provided and valid.

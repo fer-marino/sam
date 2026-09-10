@@ -277,31 +277,33 @@ func TestServiceRegistry_ReprovideResumesWhenBackendRecovers(t *testing.T) {
 	}
 }
 
-// slowProbingService is a backendProber whose Probe blocks until the given
-// delay elapses or the context is cancelled first, whichever comes first -
-// unlike probingService, it actually respects the probe deadline, which is
-// what a real command-spawned backend with a slow cold-start does.
+// slowProbingService is a backendProber whose Probe is deadline-inspecting
+// and context-controlled rather than timer-based: it records the deadline
+// it was given, and for the timeout case blocks on ctx.Done() instead of
+// sleeping a real duration. This keeps the tests below deterministic and
+// free of real-time dependencies - no CI flakiness from scheduling jitter,
+// no slow test suite from real sleeps - while still exercising the same
+// behavior a real command-spawned backend with a slow cold-start would hit.
 type slowProbingService struct {
 	*fakeService
-	delay time.Duration
+	shouldTimeout bool
+	lastDeadline  time.Time
+	hasDeadline   bool
 }
 
-func newSlowProbingSvc(name string, delay time.Duration) *slowProbingService {
+func newSlowProbingSvc(name string) *slowProbingService {
 	return &slowProbingService{
 		fakeService: newFakeSvc(name, api.ServiceType_SERVICE_TYPE_MCP),
-		delay:       delay,
 	}
 }
 
 func (p *slowProbingService) Probe(ctx context.Context) error {
-	timer := time.NewTimer(p.delay)
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-		return nil
-	case <-ctx.Done():
+	p.lastDeadline, p.hasDeadline = ctx.Deadline()
+	if p.shouldTimeout {
+		<-ctx.Done()
 		return ctx.Err()
 	}
+	return nil
 }
 
 // The bug behind #376: defaultDHTProbeTimeout was a hard-coded 2s with no way to
@@ -312,13 +314,12 @@ func (p *slowProbingService) Probe(ctx context.Context) error {
 // fix: the same slow backend must fail to advertise under the default and
 // succeed once constructed with more time.
 func TestServiceRegistry_BackendProbeTimeoutIsConfigurable(t *testing.T) {
-	const probeDelay = 60 * time.Millisecond
-
 	t.Run("default timeout is too short for a slow backend", func(t *testing.T) {
 		dht := &fakeDHT{}
-		r := NewServiceRegistry(dht, 10*time.Millisecond) // shorter than probeDelay
+		r := NewServiceRegistry(dht, 10*time.Millisecond)
 
-		svc := newSlowProbingSvc("slow", probeDelay)
+		svc := newSlowProbingSvc("slow")
+		svc.shouldTimeout = true
 		if err := r.Register(context.Background(), svc); err != nil {
 			t.Fatalf("Register: %v", err)
 		}
@@ -327,16 +328,24 @@ func TestServiceRegistry_BackendProbeTimeoutIsConfigurable(t *testing.T) {
 		}
 	})
 
-	t.Run("raising the timeout lets the same backend advertise", func(t *testing.T) {
+	t.Run("raising the timeout applies the configured duration to the probe context", func(t *testing.T) {
 		dht := &fakeDHT{}
-		r := NewServiceRegistry(dht, probeDelay*5) // comfortably longer than probeDelay
+		timeout := 500 * time.Millisecond
+		r := NewServiceRegistry(dht, timeout)
 
-		svc := newSlowProbingSvc("slow", probeDelay)
+		svc := newSlowProbingSvc("slow")
 		if err := r.Register(context.Background(), svc); err != nil {
 			t.Fatalf("Register: %v", err)
 		}
 		if len(dht.calls) != 2 {
 			t.Errorf("Provide called %d times once given enough time to probe, want 2 (name + type CID)", len(dht.calls))
+		}
+		if !svc.hasDeadline {
+			t.Fatal("expected probe context to have a deadline")
+		}
+		remaining := time.Until(svc.lastDeadline)
+		if remaining > timeout || remaining < timeout-100*time.Millisecond {
+			t.Errorf("expected probe deadline to be close to %v, got remaining %v", timeout, remaining)
 		}
 	})
 

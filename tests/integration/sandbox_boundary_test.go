@@ -89,7 +89,7 @@ func TestSandboxBoundaryCUJ(t *testing.T) {
 		"--listen", "/ip4/127.0.0.1/udp/0/quic-v1",
 		"--listen", "/ip4/127.0.0.1/tcp/0",
 		"--discovery-interval", "100ms",
-		"--config", writeServicesConfig(t, homeA,
+		"--config", writeNodeConfig(t, homeA, nil,
 			svcDecl{Type: "inference", Name: "test-llm", TargetURL: inference.URL},
 			svcDecl{Type: "mcp", Name: "calc", TargetURL: tools.URL}),
 	)

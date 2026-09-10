@@ -49,12 +49,18 @@ teardown() {
   docker volume create "${data_vol}"
   CLEANUP_VOLUMES+=("${data_vol}")
 
+  # Labels are declared in the node config, never on the command line, so join
+  # is the path that has to carry them into enrollment.
+  local labels_config
+  labels_config=$(realpath tests/e2e/fixtures/sam-node-labels.yaml)
+
   docker run -d --name "${node_name}-join" \
     --network "${MESH_NETWORK}" \
     $(mesh_get_add_hosts) \
     -v "${data_vol}:/data" \
+    -v "${labels_config}:/etc/sam/node-config.yaml:ro" \
     "sam-node:local" \
-    join --data-dir /data "http://sam-control-plane:8080"
+    join --config /etc/sam/node-config.yaml --data-dir /data "http://sam-control-plane:8080"
   MESH_CONTAINERS+=("${node_name}-join")
 
   run mesh_wait_for_log "${node_name}-join" "OAuth Device Authorization Flow" 20
@@ -68,19 +74,45 @@ teardown() {
   [[ "$(docker inspect -f '{{.State.ExitCode}}' "${node_name}-join")" -eq 0 ]]
   docker rm -f "${node_name}-join" >/dev/null 2>&1 || true
 
-  # Now run the node with the stored identity
+  # Now run the node with the stored identity, on the same control plane it
+  # enrolled against: a mismatch is fatal, as is a tokenless TCP sidecar.
   docker run -d \
     --name "${node_name}" \
     --network "${MESH_NETWORK}" \
     $(mesh_get_add_hosts) \
     -v "${data_vol}:/data" \
+    -e SAM_API_TOKEN="secret-token" \
     "sam-node:local" \
     run \
     --data-dir /data \
-    --control-plane "http://sam-control-plane:9090"
+    --control-plane "http://sam-control-plane:8080"
   MESH_CONTAINERS+=("${node_name}")
 
   mesh_wait_for_log "${node_name}" "Using stored identity." 20
+  mesh_wait_for_log "${node_name}" "Serving the local API on Unix socket" 30
+
+  # The labels join declared must come back attested. /sam/identity hands back
+  # the raw biscuit rather than decoded claims, so read the signed
+  # label("region", "eu") fact out of its symbol table. The Unix socket is the
+  # only transport that endpoint accepts besides mTLS.
+  local deadline=$((SECONDS + 30))
+  local evidence="" biscuit=""
+  while ((SECONDS < deadline)); do
+    evidence=$(docker run --rm -v "${data_vol}:/data" python:3.12 \
+      curl -s --unix-socket /data/sam.sock http://localhost/sam/identity 2>&1)
+    biscuit=$(echo "${evidence}" | jq -r '.biscuit // empty' 2>/dev/null)
+    if [[ -n "${biscuit}" ]] && python3 -c "
+import base64, sys
+raw = base64.b64decode(sys.argv[1])
+sys.exit(0 if b'\x05label' in raw and b'\x06region' in raw and b'\x02eu' in raw else 1)
+" "${biscuit}"; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "join did not carry config labels into enrollment; last evidence: ${evidence}"
+  docker logs --tail 30 "${node_name}" 2>&1 || true
+  return 1
 }
 
 @test "Authentication Flow 3: Workload Identity Federation (JWT Path)" {

@@ -222,7 +222,7 @@ roles:
 		"--discovery-interval", "100ms",
 		"--enable-relay=true",
 		"--allow-loopback=true",
-		"--config", writeServicesConfig(t, tmpDir,
+		"--config", writeNodeConfig(t, tmpDir, nil,
 			svcDecl{Type: "mcp", Name: "federated-tool", TargetURL: mcpServer.URL},
 			svcDecl{Type: "mcp", Name: "raw-pipe", TargetURL: rawServer.URL}),
 	)

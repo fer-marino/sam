@@ -27,6 +27,9 @@ extraArgs: []
 # advertises, and local attenuation.
 config:
   version: v1alpha1
+  # Operator-declared labels the control plane attests, subject to the role's
+  # allowed_labels grant (e.g. region: us-east-1).
+  labels: {}
   attenuation:
     policies: []
     checks: []

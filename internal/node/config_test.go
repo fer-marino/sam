@@ -260,6 +260,35 @@ attenuation:
 `,
 			wantErr: true,
 		},
+		{
+			name: "Labels are parsed",
+			yamlContent: `
+version: "v1alpha1"
+labels:
+  region: "us-east-1"
+  team: "platform"
+`,
+			wantErr: false,
+			verify: func(t *testing.T, config *NodeConfigComplete) {
+				if len(config.Labels) != 2 {
+					t.Fatalf("got %d labels, want 2: %v", len(config.Labels), config.Labels)
+				}
+				if config.Labels["region"] != "us-east-1" || config.Labels["team"] != "platform" {
+					t.Errorf("unexpected labels: %v", config.Labels)
+				}
+			},
+		},
+		{
+			// The label set is what the control plane attests, so a malformed
+			// one must stop the node at load rather than at enrollment.
+			name: "Malformed label key is rejected",
+			yamlContent: `
+version: "v1alpha1"
+labels:
+  "bad key!": "us-east-1"
+`,
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {

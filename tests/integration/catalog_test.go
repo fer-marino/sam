@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -41,7 +42,7 @@ func tokenPath(t *testing.T, secret string) string {
 	return p
 }
 
-// svcDecl is one service entry for writeServicesConfig.
+// svcDecl is one service entry for writeNodeConfig.
 type svcDecl struct {
 	Type      string
 	Name      string
@@ -49,13 +50,24 @@ type svcDecl struct {
 	Command   []string
 }
 
-// writeServicesConfig renders a node config file declaring the given
-// services. Services only exist by declaration at startup: there is no
-// runtime registration surface, so backends must be up before the node.
-func writeServicesConfig(t *testing.T, dir string, services ...svcDecl) string {
+// writeNodeConfig writes a node config declaring the node's operator labels
+// and its static services, the only way to declare either.
+func writeNodeConfig(t *testing.T, dir string, labels map[string]string, services ...svcDecl) string {
 	t.Helper()
 	var b strings.Builder
-	b.WriteString("version: \"v1alpha1\"\nservices:\n")
+	b.WriteString("version: \"v1alpha1\"\n")
+	if len(labels) > 0 {
+		b.WriteString("labels:\n")
+		keys := make([]string, 0, len(labels))
+		for k := range labels {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			fmt.Fprintf(&b, "  %s: %q\n", k, labels[k])
+		}
+	}
+	b.WriteString("services:\n")
 	for _, s := range services {
 		fmt.Fprintf(&b, "  - type: %q\n    name: %q\n    description: \"integration test service\"\n", s.Type, s.Name)
 		if s.TargetURL != "" {
@@ -68,9 +80,9 @@ func writeServicesConfig(t *testing.T, dir string, services ...svcDecl) string {
 			}
 		}
 	}
-	p := filepath.Join(dir, "services-config.yaml")
+	p := filepath.Join(dir, "node-config.yaml")
 	if err := os.WriteFile(p, []byte(b.String()), 0o600); err != nil {
-		t.Fatalf("write services config: %v", err)
+		t.Fatalf("write node config: %v", err)
 	}
 	return p
 }

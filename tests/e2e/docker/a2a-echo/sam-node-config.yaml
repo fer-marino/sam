@@ -1,4 +1,6 @@
 version: "v1alpha1"
+labels:
+  region: "eu"
 attenuation:
   policies: []
 services:

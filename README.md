@@ -33,7 +33,7 @@ SAM provides the open protocols, cryptographic building blocks, and software to 
 1. **Deploy Dedicated Mesh Infrastructure:** Run a dedicated control plane (`sam-control-plane`) and routing relays (`sam-router`) on your chosen infrastructure (managed cloud environments like Google Cloud, private Kubernetes clusters, or air-gapped datacenters) using our [Helm chart](charts/sam-mesh/README.md) or Kubernetes manifests.
 2. **Maintain Root Cryptographic Key Custody:** Generate, manage, and hold your own Ed25519 root signing keys (via local HSMs, KMS, or Cloud EKM). You maintain 100% of the cryptographic authority—no external party can mint credentials, revoke nodes, or alter policies.
 3. **Bring Your Own Identity Provider:** Bridge agent and user identities through your own OIDC identity provider (such as Dex, Keycloak, or corporate IdP).
-4. **Enforce Territorial & Jurisdictional Boundaries:** Use cryptographically attested label gates (`--labels jurisdiction=eu`, `X-Sam-Required-Labels`) to mathematically guarantee prompts and tool invocations never leave authorized geographic scopes.
+4. **Enforce Territorial & Jurisdictional Boundaries:** Use cryptographically attested label gates (`labels: {jurisdiction: eu}` in the node config, `X-Sam-Required-Labels`) to mathematically guarantee prompts and tool invocations never leave authorized geographic scopes.
 5. **Retain Autonomous Local Vetoes:** Configure local node attenuation policies (`sam-node.yaml`) to evaluate access rules *before* control plane grants, ensuring local nodes retain absolute veto authority.
 
 > [!NOTE]

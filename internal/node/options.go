@@ -74,10 +74,6 @@ type Options struct {
 	DiscoveryConcurrency int
 	// RequiredRole restricts enrollment and startup to only accept tokens containing this role.
 	RequiredRole string
-	// Labels are operator-declared key=value claims for this node (e.g.
-	// {"region": "us-east-1"}, see api/labels.go). Empty means no claims;
-	// consumers with a label requirement will not select this node.
-	Labels map[string]string
 	// PolicySyncInterval specifies how often the node syncs the mesh policy from the control plane.
 	PolicySyncInterval time.Duration
 	// PolicySyncJitter specifies the maximum jitter delay when scheduling policy syncs on event broadcasts.
@@ -135,6 +131,9 @@ func (o *Options) Default() {
 	if o.PolicySyncJitter <= 0 {
 		o.PolicySyncJitter = 10 * time.Second
 	}
+	if o.NodeConfig == nil {
+		o.NodeConfig = &NodeConfigComplete{}
+	}
 }
 
 // Validate verifies that the required options are provided and valid.
@@ -147,9 +146,6 @@ func (o *Options) Validate() error {
 	}
 	if o.RequiredRole == "" {
 		return fmt.Errorf("RequiredRole must be specified")
-	}
-	if err := api.ValidateLabels(o.Labels); err != nil {
-		return err
 	}
 	return nil
 }

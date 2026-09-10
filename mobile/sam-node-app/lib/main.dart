@@ -1126,6 +1126,8 @@ class _NodeControlPageState extends State<NodeControlPage> {
           const SizedBox(height: 30),
           TextField(
             controller: _controlPlaneController,
+            // A pasted URL often carries a trailing space or newline.
+            inputFormatters: [FilteringTextInputFormatter.deny(RegExp(r'\s'))],
             decoration: const InputDecoration(
               labelText: 'Control plane URL',
               border: OutlineInputBorder(),

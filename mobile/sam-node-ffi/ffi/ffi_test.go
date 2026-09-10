@@ -108,15 +108,12 @@ func TestMobileFFILifecycle(t *testing.T) {
 
 	// 2. Mobile Enrollment
 	tmpDir := t.TempDir()
-	err = EnrollNode(tmpDir, httpServer.URL, "dummy-jwt", true, "region=eu-west-1", "")
+	err = EnrollNode(tmpDir, httpServer.URL, "dummy-jwt", true, `{"region":"eu-west-1"}`, "")
 	if err != nil {
 		t.Fatalf("EnrollNode failed: %v", err)
 	}
 	if enrolledLabels["region"] != "eu-west-1" {
 		t.Fatalf("Expected label region=eu-west-1 in enroll request, got %v", enrolledLabels)
-	}
-	if got, err := loadEnrolledLabels(tmpDir); err != nil || got["region"] != "eu-west-1" {
-		t.Fatalf("Expected enrolled labels persisted for StartNode, got %v, %v", got, err)
 	}
 
 	// 3. Mobile Node Start
@@ -127,7 +124,7 @@ func TestMobileFFILifecycle(t *testing.T) {
 		BindAddr:        "127.0.0.1:0", // random free port
 		ApiToken:        "test-token",
 		AllowLoopback:   true,
-		// No labels: StartNode must fall back to the enrolled ones.
+		Labels:          map[string]string{"region": "eu-west-1"},
 	}
 	cfgBytes, _ := json.Marshal(cfg)
 
@@ -148,7 +145,7 @@ func TestMobileFFILifecycle(t *testing.T) {
 }
 
 func TestStartNodeRejectsInvalidLabels(t *testing.T) {
-	if err := StartNode(`{"labels": "no-equals"}`); err == nil {
+	if err := StartNode(`{"labels": {"bad key!": "x"}}`); err == nil {
 		_ = StopNode()
 		t.Fatal("expected StartNode to reject invalid labels")
 	}
@@ -200,22 +197,6 @@ func TestMobileConfigDecodesAttenuation(t *testing.T) {
 	}
 	if len(config.Attenuation.Rules) != 1 || len(config.Attenuation.Policies) != 1 || len(config.Attenuation.Checks) != 1 {
 		t.Fatalf("got %+v, want one statement of each kind", config.Attenuation)
-	}
-}
-
-// A rejected enrollment must not record labels the Biscuit does not carry.
-func TestEnrollNodeRejectedLeavesNoLabels(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "role grants no labels", http.StatusForbidden)
-	}))
-	defer srv.Close()
-
-	dir := t.TempDir()
-	if err := EnrollNode(dir, srv.URL, "dummy-jwt", true, "region=eu-west-1", ""); err == nil {
-		t.Fatal("expected enrollment to fail")
-	}
-	if got, err := loadEnrolledLabels(dir); err != nil || got != nil {
-		t.Fatalf("labels must not be persisted after a rejected enrollment, got %v, %v", got, err)
 	}
 }
 
@@ -274,14 +255,11 @@ func TestReEnrollNodeUsesStoredRefreshToken(t *testing.T) {
 	}
 	_ = store.Close()
 
-	if err := ReEnrollNode(dir, "region=us-east-1"); err != nil {
+	if err := ReEnrollNode(dir, `{"region":"us-east-1"}`); err != nil {
 		t.Fatalf("ReEnrollNode failed: %v", err)
 	}
 	if registered.Jwt != "fresh-jwt" || registered.PeerId != want.String() || registered.Labels["region"] != "us-east-1" {
 		t.Fatalf("unexpected enroll request: jwt=%q peer=%q labels=%v", registered.Jwt, registered.PeerId, registered.Labels)
-	}
-	if got, err := loadEnrolledLabels(dir); err != nil || got["region"] != "us-east-1" {
-		t.Fatalf("expected re-enrolled labels persisted, got %v, %v", got, err)
 	}
 	store, err = node.NewStore(dir)
 	if err != nil {
@@ -293,7 +271,21 @@ func TestReEnrollNodeUsesStoredRefreshToken(t *testing.T) {
 	}
 
 	// Nothing saved means nothing to re-enroll with; the app opens the browser.
-	if err := ReEnrollNode(t.TempDir(), "region=us-east-1"); err == nil {
+	if err := ReEnrollNode(t.TempDir(), `{"region":"us-east-1"}`); err == nil {
 		t.Fatal("expected re-enrollment without a refresh token to fail")
+	}
+}
+
+func TestDecodeLabels(t *testing.T) {
+	if got, err := decodeLabels(""); err != nil || got != nil {
+		t.Fatalf("empty string should mean no labels, got %v, %v", got, err)
+	}
+	if got, err := decodeLabels(`{"region":"eu-west-1"}`); err != nil || got["region"] != "eu-west-1" {
+		t.Fatalf("unexpected labels %v, %v", got, err)
+	}
+	for _, bad := range []string{`not json`, `{"bad key!":"x"}`} {
+		if _, err := decodeLabels(bad); err == nil {
+			t.Fatalf("expected %q to be rejected", bad)
+		}
 	}
 }

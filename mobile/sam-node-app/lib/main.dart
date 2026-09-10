@@ -85,7 +85,8 @@ class _NodeControlPageState extends State<NodeControlPage> {
   String _refreshToken = '';
   final _tokenController = TextEditingController(text: 'secret-token');
   // Labels are attested at enrollment; changing them requires re-enrolling.
-  // EnrollNode in the FFI writes them to this file; read back at launch.
+  // The field is saved here after a successful enrollment and read back at
+  // launch, like attenuation.json.
   static const _labelsFile = 'labels';
   final _labelsController = TextEditingController();
 
@@ -189,6 +190,42 @@ class _NodeControlPageState extends State<NodeControlPage> {
       _attenuationChecksController.text = join('checks');
     } catch (e) {
       debugPrint('DEBUG: Failed to read attenuation config: $e');
+    }
+  }
+
+  // The field keeps the CLI's old --labels wire format. Only the split lives
+  // here; the FFI validates keys and values with the CLI's rules.
+  Map<String, String> _parseLabels(String text) {
+    final labels = <String, String>{};
+    for (final part in text.split(',')) {
+      final entry = part.trim();
+      if (entry.isEmpty) continue;
+      final eq = entry.indexOf('=');
+      if (eq < 0) {
+        throw FormatException('invalid label "$entry": expected key=value');
+      }
+      labels[entry.substring(0, eq).trim()] = entry.substring(eq + 1).trim();
+    }
+    return labels;
+  }
+
+  // Reports a malformed field through _status and returns null so the
+  // caller can bail out before touching the FFI.
+  Map<String, String>? _labelsOrReport(String text, String failure) {
+    try {
+      return _parseLabels(text);
+    } on FormatException catch (e) {
+      setState(() => _status = '$failure: ${e.message}');
+      return null;
+    }
+  }
+
+  Future<void> _saveLabels(String dataDir, String text) async {
+    try {
+      await Directory(dataDir).create(recursive: true);
+      await File('$dataDir/$_labelsFile').writeAsString(text);
+    } catch (e) {
+      debugPrint('DEBUG: Failed to save labels: $e');
     }
   }
 
@@ -646,8 +683,11 @@ class _NodeControlPageState extends State<NodeControlPage> {
     final controlPlaneText = _controlPlaneController.text;
     final jwtText = _jwtController.text;
     final labelsText = _labelsController.text.trim();
-    final err = await _isolatedEnroll(
-        dataDir, controlPlaneText, jwtText, true, labelsText, _refreshToken);
+    final labels = _labelsOrReport(labelsText, 'Enrollment failed');
+    if (labels == null) return;
+    final err = await _isolatedEnroll(dataDir, controlPlaneText, jwtText, true,
+        jsonEncode(labels), _refreshToken);
+    if (err == null) await _saveLabels(dataDir, labelsText);
 
     setState(() {
       if (err != null) {
@@ -662,15 +702,23 @@ class _NodeControlPageState extends State<NodeControlPage> {
   // Silent path first: the refresh token saved at enrollment buys a JWT.
   // Any failure (none saved, expired, revoked) falls back to the browser.
   Future<void> _reEnroll() async {
+    final labelsText = _labelsController.text.trim();
+    final labels = _labelsOrReport(labelsText, 'Re-enroll failed');
+    if (labels == null) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(_status)));
+      return;
+    }
     setState(() {
       _loggingIn = true;
       _status = 'Re-enrolling...';
     });
     final appDir = await getApplicationDocumentsDirectory();
-    final err = await _isolatedReEnroll(
-        '${appDir.path}/sam_data', _labelsController.text.trim());
+    final dataDir = '${appDir.path}/sam_data';
+    final err = await _isolatedReEnroll(dataDir, jsonEncode(labels));
     if (!mounted) return;
     if (err == null) {
+      await _saveLabels(dataDir, labelsText);
       setState(() {
         _loggingIn = false;
         _status = 'Re-enrolled';
@@ -737,6 +785,9 @@ class _NodeControlPageState extends State<NodeControlPage> {
   Future<void> _startNode() async {
     final appDir = await getApplicationDocumentsDirectory();
     final dataDir = '${appDir.path}/sam_data';
+    final labels =
+        _labelsOrReport(_labelsController.text.trim(), 'Start failed');
+    if (labels == null) return;
 
     // The embedded MCP backend must be listening before the node starts:
     // services are declared in the start configuration and probed at startup,
@@ -783,7 +834,7 @@ class _NodeControlPageState extends State<NodeControlPage> {
       'apiToken': _tokenController.text,
       'allowLoopback': true,
       'enableRelay': false,
-      'labels': _labelsController.text.trim(),
+      'labels': labels,
       'services': services,
       if (attenuation.values.any((l) => l.isNotEmpty)) 'attenuation': attenuation,
     });

@@ -56,11 +56,11 @@ type MobileConfig struct {
 	LogLevel          string `json:"logLevel"`
 	DiscoveryInterval string `json:"discoveryInterval"`
 	ListenAddrs       string `json:"listenAddrs"` // comma-separated
-	// Labels are comma-separated key=value claims, the wire format of the
-	// config file's labels map; they are attested only at enrollment.
-	Labels        string `json:"labels"`
-	AllowLoopback bool   `json:"allowLoopback"`
-	EnableRelay   bool   `json:"enableRelay"`
+	// Labels mirror the config file's labels map. They are attested only at
+	// enrollment; a start re-announces them and re-enrollment re-sends them.
+	Labels        map[string]string `json:"labels"`
+	AllowLoopback bool              `json:"allowLoopback"`
+	EnableRelay   bool              `json:"enableRelay"`
 	// Services this node exposes, declared at start like the node config
 	// file's services block; there is no runtime registration.
 	Services []MobileService `json:"services,omitempty"`
@@ -89,18 +89,6 @@ func StartNode(configJSON string) error {
 	var config MobileConfig
 	if err := json.Unmarshal([]byte(configJSON), &config); err != nil {
 		return fmt.Errorf("failed to parse config JSON: %w", err)
-	}
-
-	labels, err := api.ParseLabels(config.Labels)
-	if err != nil {
-		return fmt.Errorf("invalid labels: %w", err)
-	}
-	// The app locks its labels field once enrolled, so an empty start config
-	// reuses the labels the node enrolled with.
-	if len(labels) == 0 {
-		if labels, err = loadEnrolledLabels(config.DataDir); err != nil {
-			return err
-		}
 	}
 
 	lvl := golog.LevelInfo
@@ -202,7 +190,7 @@ func StartNode(configJSON string) error {
 	nodeConfig, err := node.CompleteNodeConfig(api.NodeConfig{
 		Attenuation: config.Attenuation,
 		Services:    services,
-		Labels:      labels,
+		Labels:      config.Labels,
 	})
 	if err != nil {
 		_ = store.Close()
@@ -335,35 +323,28 @@ func GetNodeID() string {
 	return ""
 }
 
-// labelsFile keeps the enrolled labels in the app's data directory. The CLI
-// has no equivalent: it re-reads them from its config file on every run.
-const labelsFile = "labels"
-
-func saveEnrolledLabels(dataDir, labels string) error {
-	if err := os.WriteFile(filepath.Join(dataDir, labelsFile), []byte(labels), 0600); err != nil {
-		return fmt.Errorf("failed to save labels: %w", err)
+// decodeLabels reads the JSON object the app sends for labels; an empty
+// string means none. Validation is the CLI's, so the errors match.
+func decodeLabels(jsonText string) (map[string]string, error) {
+	var labels map[string]string
+	if jsonText != "" {
+		if err := json.Unmarshal([]byte(jsonText), &labels); err != nil {
+			return nil, fmt.Errorf("invalid labels: %w", err)
+		}
 	}
-	return nil
+	if err := api.ValidateLabels(labels); err != nil {
+		return nil, fmt.Errorf("invalid labels: %w", err)
+	}
+	return labels, nil
 }
 
-func loadEnrolledLabels(dataDir string) (map[string]string, error) {
-	raw, err := os.ReadFile(filepath.Join(dataDir, labelsFile))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to read labels: %w", err)
-	}
-	return api.ParseLabels(string(raw))
-}
-
-// EnrollNode enrolls a node. Labels are comma-separated key=value claims,
-// minted into the node's Biscuit here; changing them means enrolling again,
-// which reuses the stored key so the PeerID survives.
+// EnrollNode enrolls a node. Labels arrive as a JSON object and are minted
+// into the node's Biscuit here; changing them means enrolling again, which
+// reuses the stored key so the PeerID survives.
 func EnrollNode(dataDir string, controlPlaneURL string, jwt string, allowLoopback bool, labels string, refreshToken string) error {
-	parsedLabels, err := api.ParseLabels(labels)
+	parsedLabels, err := decodeLabels(labels)
 	if err != nil {
-		return fmt.Errorf("invalid labels: %w", err)
+		return err
 	}
 
 	_ = os.MkdirAll(dataDir, 0700)
@@ -423,12 +404,6 @@ func EnrollNode(dataDir string, controlPlaneURL string, jwt string, allowLoopbac
 	err = meshNode.Enroll(enrollCtx, controlPlaneURL, jwt)
 	if err != nil {
 		return fmt.Errorf("enrollment failed: %w", err)
-	}
-
-	// Saved only once the control plane accepted them, so a rejected
-	// re-enrollment cannot leave this file ahead of the Biscuit.
-	if err := saveEnrolledLabels(dataDir, labels); err != nil {
-		return err
 	}
 
 	if err := store.SaveControlPlaneURL(controlPlaneURL); err != nil {
@@ -573,9 +548,9 @@ func ReEnrollNode(dataDir string, labels string) error {
 	if activeNode != nil || unauthSrv != nil {
 		return errors.New("stop the node before re-enrolling")
 	}
-	parsedLabels, err := api.ParseLabels(labels)
+	parsedLabels, err := decodeLabels(labels)
 	if err != nil {
-		return fmt.Errorf("invalid labels: %w", err)
+		return err
 	}
 	store, err := node.NewStore(dataDir)
 	if err != nil {
@@ -596,5 +571,5 @@ func ReEnrollNode(dataDir string, labels string) error {
 	if err := meshNode.ReEnrollWithRefreshToken(context.Background()); err != nil {
 		return fmt.Errorf("re-enrollment failed: %w", err)
 	}
-	return saveEnrolledLabels(dataDir, labels)
+	return nil
 }

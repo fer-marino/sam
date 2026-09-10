@@ -78,6 +78,14 @@ type Options struct {
 	PolicySyncInterval time.Duration
 	// PolicySyncJitter specifies the maximum jitter delay when scheduling policy syncs on event broadcasts.
 	PolicySyncJitter time.Duration
+	// BackendProbeTimeout bounds how long a command-spawned service backend
+	// (sam-node.yaml's `command`, spawned as a local subprocess) is given to
+	// answer before the service is registered but withheld from
+	// advertisement. Zero uses the library default (2s). Raise this for
+	// backends with slower cold-start/import costs than that - the default
+	// is tight enough that even simple interpreted-language MCP servers can
+	// miss it on first spawn.
+	BackendProbeTimeout time.Duration
 }
 
 // Default applies default values to Options if they are not specified.
@@ -133,6 +141,9 @@ func (o *Options) Default() {
 	}
 	if o.NodeConfig == nil {
 		o.NodeConfig = &NodeConfigComplete{}
+	}
+	if o.BackendProbeTimeout <= 0 {
+		o.BackendProbeTimeout = defaultDHTProbeTimeout
 	}
 }
 

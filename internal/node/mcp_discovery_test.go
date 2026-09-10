@@ -71,7 +71,7 @@ func (f *fakeToolService) Tools(_ context.Context) ([]string, error) {
 
 func TestDiscoverySource(t *testing.T) {
 	node := &SamNode{
-		services:   NewServiceRegistry(&fakeDHT{}),
+		services:   NewServiceRegistry(&fakeDHT{}, 0),
 		nodeConfig: &NodeConfigComplete{Labels: map[string]string{"region": "EU"}},
 	}
 	ctx := context.Background()

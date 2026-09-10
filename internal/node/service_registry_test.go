@@ -21,6 +21,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/sam/api"
 	"github.com/ipfs/go-cid"
@@ -70,8 +71,9 @@ func newFakeSvc(name string, st api.ServiceType) *fakeService {
 // newServiceRegistryForTest builds a registry against the fake DHT for tests.
 func newServiceRegistryForTest(d dhtProvider) *ServiceRegistry {
 	return &ServiceRegistry{
-		services: map[string]Service{},
-		dht:      d,
+		services:            map[string]Service{},
+		dht:                 d,
+		backendProbeTimeout: defaultDHTProbeTimeout,
 	}
 }
 
@@ -273,4 +275,86 @@ func TestServiceRegistry_ReprovideResumesWhenBackendRecovers(t *testing.T) {
 	if len(dht.calls) != 2 {
 		t.Errorf("Provide called %d times after recovery, want 2 (name + type CID)", len(dht.calls))
 	}
+}
+
+// slowProbingService is a backendProber whose Probe is deadline-inspecting
+// and context-controlled rather than timer-based: it records the deadline
+// it was given, and for the timeout case blocks on ctx.Done() instead of
+// sleeping a real duration. This keeps the tests below deterministic and
+// free of real-time dependencies - no CI flakiness from scheduling jitter,
+// no slow test suite from real sleeps - while still exercising the same
+// behavior a real command-spawned backend with a slow cold-start would hit.
+type slowProbingService struct {
+	*fakeService
+	shouldTimeout bool
+	lastDeadline  time.Time
+	hasDeadline   bool
+}
+
+func newSlowProbingSvc(name string) *slowProbingService {
+	return &slowProbingService{
+		fakeService: newFakeSvc(name, api.ServiceType_SERVICE_TYPE_MCP),
+	}
+}
+
+func (p *slowProbingService) Probe(ctx context.Context) error {
+	p.lastDeadline, p.hasDeadline = ctx.Deadline()
+	if p.shouldTimeout {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return nil
+}
+
+// The bug behind #376: defaultDHTProbeTimeout was a hard-coded 2s with no way to
+// raise it, so a backend whose own cold-start cost alone exceeds that -
+// measured in practice for moderately-featured MCP server stacks - could
+// never be advertised on its first registration. NewServiceRegistry's
+// backendProbeTimeout parameter (wired from --backend-probe-timeout) is the
+// fix: the same slow backend must fail to advertise under the default and
+// succeed once constructed with more time.
+func TestServiceRegistry_BackendProbeTimeoutIsConfigurable(t *testing.T) {
+	t.Run("default timeout is too short for a slow backend", func(t *testing.T) {
+		dht := &fakeDHT{}
+		r := NewServiceRegistry(dht, 10*time.Millisecond)
+
+		svc := newSlowProbingSvc("slow")
+		svc.shouldTimeout = true
+		if err := r.Register(context.Background(), svc); err != nil {
+			t.Fatalf("Register: %v", err)
+		}
+		if len(dht.calls) != 0 {
+			t.Errorf("Provide called %d times for a backend slower than the probe timeout, want 0", len(dht.calls))
+		}
+	})
+
+	t.Run("raising the timeout applies the configured duration to the probe context", func(t *testing.T) {
+		dht := &fakeDHT{}
+		timeout := 500 * time.Millisecond
+		r := NewServiceRegistry(dht, timeout)
+
+		svc := newSlowProbingSvc("slow")
+		if err := r.Register(context.Background(), svc); err != nil {
+			t.Fatalf("Register: %v", err)
+		}
+		if len(dht.calls) != 2 {
+			t.Errorf("Provide called %d times once given enough time to probe, want 2 (name + type CID)", len(dht.calls))
+		}
+		if !svc.hasDeadline {
+			t.Fatal("expected probe context to have a deadline")
+		}
+		remaining := time.Until(svc.lastDeadline)
+		if remaining > timeout || remaining < timeout-100*time.Millisecond {
+			t.Errorf("expected probe deadline to be close to %v, got remaining %v", timeout, remaining)
+		}
+	})
+
+	t.Run("zero or negative backendProbeTimeout falls back to defaultDHTProbeTimeout", func(t *testing.T) {
+		for _, d := range []time.Duration{0, -1 * time.Second} {
+			r := NewServiceRegistry(&fakeDHT{}, d)
+			if got := r.backendProbeTimeout; got != defaultDHTProbeTimeout {
+				t.Errorf("NewServiceRegistry(dht, %v).backendProbeTimeout = %v, want %v", d, got, defaultDHTProbeTimeout)
+			}
+		}
+	})
 }

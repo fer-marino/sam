@@ -66,7 +66,7 @@ func TestConstantTimeEqual(t *testing.T) {
 func TestMetricsGatedOnTCPButNotOnTheSocket(t *testing.T) {
 	node := &SamNode{
 		BiscuitTimeout: 500 * time.Millisecond,
-		services:       NewServiceRegistry(&fakeDHT{}),
+		services:       NewServiceRegistry(&fakeDHT{}, 0),
 	}
 	socketPath := filepath.Join(t.TempDir(), "sam.sock")
 

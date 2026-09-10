@@ -968,6 +968,9 @@ class _NodeControlPageState extends State<NodeControlPage> {
                     TextFormField(
                       controller: _externalMcpUrlController,
                       enabled: !isRunning,
+                      inputFormatters: [
+                        FilteringTextInputFormatter.deny(RegExp(r'\s'))
+                      ],
                       decoration: const InputDecoration(
                         labelText: 'External MCP Server URL',
                         hintText: 'http://127.0.0.1:8080',

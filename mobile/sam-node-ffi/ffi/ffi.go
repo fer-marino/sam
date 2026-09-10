@@ -56,8 +56,8 @@ type MobileConfig struct {
 	LogLevel          string `json:"logLevel"`
 	DiscoveryInterval string `json:"discoveryInterval"`
 	ListenAddrs       string `json:"listenAddrs"` // comma-separated
-	// Labels are comma-separated key=value claims (same syntax as the CLI
-	// --labels flag); they are attested only at enrollment.
+	// Labels are comma-separated key=value claims, the wire format of the
+	// config file's labels map; they are attested only at enrollment.
 	Labels        string `json:"labels"`
 	AllowLoopback bool   `json:"allowLoopback"`
 	EnableRelay   bool   `json:"enableRelay"`
@@ -336,7 +336,7 @@ func GetNodeID() string {
 }
 
 // labelsFile keeps the enrolled labels in the app's data directory. The CLI
-// has no equivalent: --labels is passed on every run.
+// has no equivalent: it re-reads them from its config file on every run.
 const labelsFile = "labels"
 
 func loadEnrolledLabels(dataDir string) (map[string]string, error) {
@@ -350,7 +350,7 @@ func loadEnrolledLabels(dataDir string) (map[string]string, error) {
 	return api.ParseLabels(string(raw))
 }
 
-// EnrollNode enrolls a node. Labels use the CLI --labels syntax and are
+// EnrollNode enrolls a node. Labels are comma-separated key=value claims,
 // minted into the node's Biscuit here — changing them requires re-enrolling.
 func EnrollNode(dataDir string, controlPlaneURL string, jwt string, allowLoopback bool, labels string) error {
 	parsedLabels, err := api.ParseLabels(labels)

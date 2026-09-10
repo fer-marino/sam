@@ -716,7 +716,6 @@ class _NodeControlPageState extends State<NodeControlPage> {
     final appDir = await getApplicationDocumentsDirectory();
     final dataDir = '${appDir.path}/sam_data';
     final err = await _isolatedReEnroll(dataDir, jsonEncode(labels));
-    if (!mounted) return;
     if (err == null) {
       await _saveLabels(dataDir, labelsText);
       setState(() {
@@ -726,8 +725,8 @@ class _NodeControlPageState extends State<NodeControlPage> {
     } else {
       debugPrint('DEBUG: silent re-enroll failed, using the browser: $err');
       await _loginAndEnroll();
-      if (!mounted) return;
     }
+    if (!mounted) return;
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text(_status)));
   }

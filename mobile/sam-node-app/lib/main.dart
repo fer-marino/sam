@@ -75,6 +75,8 @@ class _NodeControlPageState extends State<NodeControlPage> {
   final _jwtController = TextEditingController();
   final _tokenController = TextEditingController(text: 'secret-token');
   // Labels are attested at enrollment; changing them requires re-enrolling.
+  // EnrollNode in the FFI writes them to this file; read back at launch.
+  static const _labelsFile = 'labels';
   final _labelsController = TextEditingController();
 
   static const _exposeChannel = MethodChannel('com.example.sam_agent/mesh_expose');
@@ -110,7 +112,7 @@ class _NodeControlPageState extends State<NodeControlPage> {
 
   late SamDartMcpServer _embeddedMcpServer;
   bool _starting = false;
-  int _selectedTab = 0; // 0 = Dashboard, 1 = Services, 2 = Attenuation
+  int _selectedTab = 0; // 0 = Dashboard, 1 = Services, 2 = Config
 
   @override
   void initState() {
@@ -144,6 +146,10 @@ class _NodeControlPageState extends State<NodeControlPage> {
     final dataDir = '${appDir.path}/sam_data';
     final enrolled = _samLib.isEnrolled(dataDir);
     await _loadAttenuation(dataDir);
+    final labelsFile = File('$dataDir/$_labelsFile');
+    if (await labelsFile.exists()) {
+      _labelsController.text = await labelsFile.readAsString();
+    }
     setState(() {
       _isEnrolled = enrolled;
       if (enrolled) {
@@ -838,14 +844,12 @@ class _NodeControlPageState extends State<NodeControlPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('SAM Node Mobile')),
-      body: _isEnrolled == true
-          ? (_selectedTab == 0
-              ? _buildDashboardView()
-              : _selectedTab == 1
-                  ? _buildServicesView()
-                  : _buildAttenuationView())
-          : _buildBody(),
-      bottomNavigationBar: _isEnrolled == true
+      body: _selectedTab == 0
+          ? _buildBody()
+          : _selectedTab == 1
+              ? _buildServicesView()
+              : _buildConfigView(),
+      bottomNavigationBar: _isEnrolled != null
           ? BottomNavigationBar(
               currentIndex: _selectedTab,
               onTap: (index) {
@@ -863,8 +867,8 @@ class _NodeControlPageState extends State<NodeControlPage> {
                   label: 'Services',
                 ),
                 BottomNavigationBarItem(
-                  icon: Icon(Icons.shield),
-                  label: 'Attenuation',
+                  icon: Icon(Icons.settings),
+                  label: 'Config',
                 ),
               ],
             )
@@ -999,13 +1003,41 @@ class _NodeControlPageState extends State<NodeControlPage> {
       );
   }
 
-  Widget _buildAttenuationView() {
+  Widget _buildConfigView() {
     final bool isRunning = _running;
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16.0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Labels',
+                      style:
+                          TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                  const SizedBox(height: 6),
+                  const Text(
+                    'Attested by the control plane at enrollment. Unenroll '
+                    'from the Dashboard to change.',
+                    style: TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                  const SizedBox(height: 10),
+                  _buildConfigField(
+                    controller: _labelsController,
+                    label: 'Labels (key=value, comma-separated)',
+                    hint: 'region=eu-west-1',
+                    maxLines: 1,
+                    enabled: !_loggingIn && _isEnrolled != true,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16.0),
@@ -1023,25 +1055,25 @@ class _NodeControlPageState extends State<NodeControlPage> {
                     style: TextStyle(fontSize: 12, color: Colors.grey),
                   ),
                   const SizedBox(height: 10),
-                  _buildAttenuationField(
+                  _buildConfigField(
                     controller: _attenuationRulesController,
                     label: 'Rules',
                     hint: 'time(2026-06-30T00:00:00Z) <- true;',
-                    isRunning: isRunning,
+                    enabled: !isRunning,
                   ),
                   const SizedBox(height: 10),
-                  _buildAttenuationField(
+                  _buildConfigField(
                     controller: _attenuationPoliciesController,
                     label: 'Policies',
                     hint: 'deny if user("untrusted_sub_id");',
-                    isRunning: isRunning,
+                    enabled: !isRunning,
                   ),
                   const SizedBox(height: 10),
-                  _buildAttenuationField(
+                  _buildConfigField(
                     controller: _attenuationChecksController,
                     label: 'Checks',
                     hint: 'check if label("region", "eu-west-1");',
-                    isRunning: isRunning,
+                    enabled: !isRunning,
                   ),
                 ],
               ),
@@ -1052,19 +1084,19 @@ class _NodeControlPageState extends State<NodeControlPage> {
     );
   }
 
-  // Phone keyboards autocorrect and capitalise Datalog into something the
-  // parser rejects.
-  Widget _buildAttenuationField({
+  // Phone keyboards autocorrect and capitalise Datalog and key=value into
+  // something the parser rejects.
+  Widget _buildConfigField({
     required TextEditingController controller,
     required String label,
     required String hint,
-    required bool isRunning,
+    required bool enabled,
+    int maxLines = 4,
   }) {
     return TextFormField(
       controller: controller,
-      enabled: !isRunning,
-      maxLines: 4,
-      keyboardType: TextInputType.multiline,
+      enabled: enabled,
+      maxLines: maxLines,
       autocorrect: false,
       enableSuggestions: false,
       textCapitalization: TextCapitalization.none,
@@ -1101,15 +1133,6 @@ class _NodeControlPageState extends State<NodeControlPage> {
             ),
           ),
           const SizedBox(height: 20),
-          TextField(
-            controller: _labelsController,
-            decoration: const InputDecoration(
-              labelText: 'Labels (key=value, comma-separated)',
-              border: OutlineInputBorder(),
-              hintText: 'region=eu-west-1',
-            ),
-          ),
-          const SizedBox(height: 20),
           ElevatedButton.icon(
             onPressed: _loggingIn ? null : _loginAndEnroll,
             icon: _loggingIn
@@ -1129,6 +1152,12 @@ class _NodeControlPageState extends State<NodeControlPage> {
             label: const Text('Device Login (TV / Other Device)'),
             style: ElevatedButton.styleFrom(
                 padding: const EdgeInsets.symmetric(vertical: 16)),
+          ),
+          const SizedBox(height: 10),
+          const Text(
+            'Set labels on the Config tab before enrolling.',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 12, color: Colors.grey),
           ),
           const SizedBox(height: 30),
           if (_status.isNotEmpty &&

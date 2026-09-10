@@ -95,8 +95,8 @@ func StartNode(configJSON string) error {
 	if err != nil {
 		return fmt.Errorf("invalid labels: %w", err)
 	}
-	// The app only shows the labels field on its enrollment screen, so an
-	// empty start config reuses the labels the node enrolled with.
+	// The app locks its labels field once enrolled, so an empty start config
+	// reuses the labels the node enrolled with.
 	if len(labels) == 0 {
 		if labels, err = loadEnrolledLabels(config.DataDir); err != nil {
 			return err

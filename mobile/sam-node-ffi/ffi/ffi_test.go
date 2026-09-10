@@ -200,3 +200,19 @@ func TestMobileConfigDecodesAttenuation(t *testing.T) {
 		t.Fatalf("got %+v, want one statement of each kind", config.Attenuation)
 	}
 }
+
+// A rejected enrollment must not record labels the Biscuit does not carry.
+func TestEnrollNodeRejectedLeavesNoLabels(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "role grants no labels", http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	if err := EnrollNode(dir, srv.URL, "dummy-jwt", true, "region=eu-west-1"); err == nil {
+		t.Fatal("expected enrollment to fail")
+	}
+	if got, err := loadEnrolledLabels(dir); err != nil || got != nil {
+		t.Fatalf("labels must not be persisted after a rejected enrollment, got %v, %v", got, err)
+	}
+}

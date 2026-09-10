@@ -644,6 +644,14 @@ class _NodeControlPageState extends State<NodeControlPage> {
     });
   }
 
+  // The Config tab has no status card, so surface the outcome inline.
+  Future<void> _reEnroll() async {
+    await _loginAndEnroll();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(_status)));
+  }
+
   void _startPolling() {
     _pollingTimer?.cancel();
     _pollingTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
@@ -1024,8 +1032,8 @@ class _NodeControlPageState extends State<NodeControlPage> {
                           TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                   const SizedBox(height: 6),
                   const Text(
-                    'Attested by the control plane at enrollment. Unenroll '
-                    'from the Dashboard to change.',
+                    'Attested by the control plane. Changing them means '
+                    'logging in again; the node keeps its identity.',
                     style: TextStyle(fontSize: 12, color: Colors.grey),
                   ),
                   const SizedBox(height: 10),
@@ -1034,8 +1042,21 @@ class _NodeControlPageState extends State<NodeControlPage> {
                     label: 'Labels (key=value, comma-separated)',
                     hint: 'region=eu-west-1',
                     maxLines: 1,
-                    enabled: !_loggingIn && _isEnrolled != true,
+                    enabled: !_loggingIn && !isRunning,
                   ),
+                  if (_isEnrolled == true) ...[
+                    const SizedBox(height: 10),
+                    ElevatedButton.icon(
+                      onPressed: _loggingIn || isRunning ? null : _reEnroll,
+                      icon: _loggingIn
+                          ? const SizedBox(
+                              height: 20,
+                              width: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Icon(Icons.login),
+                      label: const Text('Re-enroll to apply'),
+                    ),
+                  ],
                 ],
               ),
             ),

@@ -351,7 +351,8 @@ func loadEnrolledLabels(dataDir string) (map[string]string, error) {
 }
 
 // EnrollNode enrolls a node. Labels are comma-separated key=value claims,
-// minted into the node's Biscuit here — changing them requires re-enrolling.
+// minted into the node's Biscuit here; changing them means enrolling again,
+// which reuses the stored key so the PeerID survives.
 func EnrollNode(dataDir string, controlPlaneURL string, jwt string, allowLoopback bool, labels string) error {
 	parsedLabels, err := api.ParseLabels(labels)
 	if err != nil {
@@ -359,9 +360,6 @@ func EnrollNode(dataDir string, controlPlaneURL string, jwt string, allowLoopbac
 	}
 
 	_ = os.MkdirAll(dataDir, 0700)
-	if err := os.WriteFile(filepath.Join(dataDir, labelsFile), []byte(labels), 0600); err != nil {
-		return fmt.Errorf("failed to save labels: %w", err)
-	}
 	logFilePath := filepath.Join(dataDir, "node.log")
 	golog.SetupLogging(golog.Config{
 		File:   logFilePath,
@@ -418,6 +416,12 @@ func EnrollNode(dataDir string, controlPlaneURL string, jwt string, allowLoopbac
 	err = meshNode.Enroll(enrollCtx, controlPlaneURL, jwt)
 	if err != nil {
 		return fmt.Errorf("enrollment failed: %w", err)
+	}
+
+	// Saved only once the control plane accepted them, so a rejected
+	// re-enrollment cannot leave this file ahead of the Biscuit.
+	if err := os.WriteFile(filepath.Join(dataDir, labelsFile), []byte(labels), 0600); err != nil {
+		return fmt.Errorf("failed to save labels: %w", err)
 	}
 
 	if err := store.SaveControlPlaneURL(controlPlaneURL); err != nil {

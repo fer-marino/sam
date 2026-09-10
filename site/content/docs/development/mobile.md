@@ -41,7 +41,7 @@ To run `sam-node` on mobile with near-zero codebase maintenance, we avoid rewrit
 1. **Go FFI Binding Package (`mobile/sam-node-ffi/`)**: Contains CGO-exported functions (`StartNode`, `StopNode`, `EnrollNode`, `GetNodeID`, `FreeString`) which compile into a C-shared library (`.so`) or static archive (`.a`).
 2. **Flutter App (`mobile/sam-node-app/`)**: A cross-platform app containing:
    - `lib/sam_ffi.dart`: The Dart FFI wrapper loading the Go library and exposing Dart methods.
-   - `lib/main.dart`: Simple control UI to enroll and start/stop the background node.
+   - `lib/main.dart`: Simple control UI to enroll and start/stop the background node. The Config tab holds the node's labels and attenuation, the app's stand-in for `sam-node.yaml`. Labels (comma-separated `key=value`, the wire format of the `labels` map) are set there; the control plane mints them into the node's Biscuit at enrollment, and the app keeps a copy in its data directory and sends it again on every start. Biscuit refresh re-mints the labels stored at enrollment, so changing them means enrolling again, which the tab's Re-enroll button does while keeping the node's identity: the app asks the OIDC provider for `offline_access`, the FFI stores the refresh token like the CLI does, and `ReEnrollNode` trades it for a JWT; the browser login runs only when that fails. Unlike the CLI, which re-reads them from its config file on every run, the app remembers them. The same tab accepts local Datalog rules, policies and checks (one statement per line) in place of the CLI's `attenuation` block; the app stores them as `attenuation.json` in the same data directory and sends them on every start, and the FFI parses them with the same code path the config file uses.
 3. **Local Loopback Communication**:
    - The Flutter Dart environment controls the node lifecycle (construction, starting, stopping) via FFI.
    - Any actual tool registration, discovery, or mesh API queries are performed using standard HTTP JSON-RPC calls over local loopback (`127.0.0.1`) to the `sam-node` sidecar API.
@@ -65,7 +65,7 @@ make mobile-ffi-android
 ```
 
 ### 3. Build Android Emulator FFI Library
-Compiles `bin/android/libsam.so` targeting Android x86_64 emulator environments:
+Compiles `bin/android-x86_64/libsam.so` for x86_64 emulator images (Intel and Linux hosts). Emulators on Apple Silicon run arm64-v8a images; use target 2 for those:
 ```bash
 make mobile-ffi-android-x86_64
 ```
@@ -89,6 +89,8 @@ make mobile-app-apk
 To make changes to `sam-node` and run them on a mobile device:
 
 ### Android Setup
+The `mobile-ffi-*` targets only build into `bin/`; copy the library into `jniLibs/` yourself (or use `make mobile-app-apk`, which does both and builds the APK). For an x86_64 emulator, swap in `mobile-ffi-android-x86_64`, `bin/android-x86_64/libsam.so` and `jniLibs/x86_64`.
+
 1. Compile the Android ARM64 FFI shared library:
    ```bash
    make mobile-ffi-android

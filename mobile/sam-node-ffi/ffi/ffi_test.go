@@ -26,9 +26,11 @@ import (
 
 	"github.com/biscuit-auth/biscuit-go/v2"
 	"github.com/google/sam/api"
+	"github.com/google/sam/internal/node"
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-msgio"
 	"google.golang.org/protobuf/proto"
 )
@@ -72,11 +74,13 @@ func TestMobileFFILifecycle(t *testing.T) {
 		println("--- MOCK ROUTER: wrote AuthResponse success with valid biscuit")
 	})
 
+	var enrolledLabels map[string]string
 	mux := http.NewServeMux()
 	mux.HandleFunc("/register", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var req api.EnrollRequest
 		_ = proto.Unmarshal(body, &req)
+		enrolledLabels = req.Labels
 
 		biscuitBytes := mintMockBiscuit(t, req.PeerId, cpPrivKey, api.RoleNode)
 		resp := &api.EnrollResponse{
@@ -104,9 +108,12 @@ func TestMobileFFILifecycle(t *testing.T) {
 
 	// 2. Mobile Enrollment
 	tmpDir := t.TempDir()
-	err = EnrollNode(tmpDir, httpServer.URL, "dummy-jwt", true)
+	err = EnrollNode(tmpDir, httpServer.URL, "dummy-jwt", true, `{"region":"eu-west-1"}`, "")
 	if err != nil {
 		t.Fatalf("EnrollNode failed: %v", err)
+	}
+	if enrolledLabels["region"] != "eu-west-1" {
+		t.Fatalf("Expected label region=eu-west-1 in enroll request, got %v", enrolledLabels)
 	}
 
 	// 3. Mobile Node Start
@@ -117,6 +124,7 @@ func TestMobileFFILifecycle(t *testing.T) {
 		BindAddr:        "127.0.0.1:0", // random free port
 		ApiToken:        "test-token",
 		AllowLoopback:   true,
+		Labels:          map[string]string{"region": "eu-west-1"},
 	}
 	cfgBytes, _ := json.Marshal(cfg)
 
@@ -133,6 +141,13 @@ func TestMobileFFILifecycle(t *testing.T) {
 	err = StopNode()
 	if err != nil {
 		t.Fatalf("StopNode failed: %v", err)
+	}
+}
+
+func TestStartNodeRejectsInvalidLabels(t *testing.T) {
+	if err := StartNode(`{"labels": {"bad key!": "x"}}`); err == nil {
+		_ = StopNode()
+		t.Fatal("expected StartNode to reject invalid labels")
 	}
 }
 
@@ -171,4 +186,106 @@ func mintMockBiscuit(t *testing.T, peerID string, priv ed25519.PrivateKey, role 
 		t.Fatalf("failed to serialize biscuit: %v", err)
 	}
 	return biscuitBytes
+}
+
+// api.Attenuation carries only yaml tags; this pins the case-insensitive JSON
+// match, since a silent miss would drop the node's local limits.
+func TestMobileConfigDecodesAttenuation(t *testing.T) {
+	var config MobileConfig
+	if err := json.Unmarshal([]byte(`{"attenuation":{"rules":["r"],"policies":["p"],"checks":["c"]}}`), &config); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if len(config.Attenuation.Rules) != 1 || len(config.Attenuation.Policies) != 1 || len(config.Attenuation.Checks) != 1 {
+		t.Fatalf("got %+v, want one statement of each kind", config.Attenuation)
+	}
+}
+
+// Re-enrollment buys a JWT with the stored refresh token and re-attests the
+// new labels under the same PeerID, with no browser involved.
+func TestReEnrollNodeUsesStoredRefreshToken(t *testing.T) {
+	cpPubKey, cpPrivKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var registered api.EnrollRequest
+	var srv *httptest.Server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"issuer": srv.URL, "token_endpoint": srv.URL + "/token"})
+	})
+	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		if r.FormValue("grant_type") != "refresh_token" || r.FormValue("refresh_token") != "stored" {
+			http.Error(w, "bad grant", http.StatusBadRequest)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"id_token": "fresh-jwt", "refresh_token": "rotated"})
+	})
+	mux.HandleFunc("/register", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = proto.Unmarshal(body, &registered)
+		resp := &api.EnrollResponse{
+			BiscuitToken:          mintMockBiscuit(t, registered.PeerId, cpPrivKey, api.RoleNode),
+			ControlPlanePublicKey: cpPubKey,
+			RouterAddresses:       []string{"/ip4/127.0.0.1/tcp/1"},
+		}
+		data, _ := proto.Marshal(resp)
+		w.Header().Set("Content-Type", "application/x-protobuf")
+		_, _ = w.Write(data)
+	})
+	srv = httptest.NewServer(mux)
+	defer srv.Close()
+
+	dir := t.TempDir()
+	store, err := node.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveControlPlaneURL(srv.URL); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveRefreshToken("stored"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveOIDCConfig(srv.URL, "mock-client", ""); err != nil {
+		t.Fatal(err)
+	}
+	want, err := peer.IDFromPublicKey(node.GetOrGenerateKey(store).GetPublic())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = store.Close()
+
+	if err := ReEnrollNode(dir, `{"region":"us-east-1"}`); err != nil {
+		t.Fatalf("ReEnrollNode failed: %v", err)
+	}
+	if registered.Jwt != "fresh-jwt" || registered.PeerId != want.String() || registered.Labels["region"] != "us-east-1" {
+		t.Fatalf("unexpected enroll request: jwt=%q peer=%q labels=%v", registered.Jwt, registered.PeerId, registered.Labels)
+	}
+	store, err = node.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	if tok, err := store.LoadRefreshToken(); err != nil || tok != "rotated" {
+		t.Fatalf("expected rotated refresh token saved, got %q, %v", tok, err)
+	}
+
+	// Nothing saved means nothing to re-enroll with; the app opens the browser.
+	if err := ReEnrollNode(t.TempDir(), `{"region":"us-east-1"}`); err == nil {
+		t.Fatal("expected re-enrollment without a refresh token to fail")
+	}
+}
+
+func TestDecodeLabels(t *testing.T) {
+	if got, err := decodeLabels(""); err != nil || got != nil {
+		t.Fatalf("empty string should mean no labels, got %v, %v", got, err)
+	}
+	if got, err := decodeLabels(`{"region":"eu-west-1"}`); err != nil || got["region"] != "eu-west-1" {
+		t.Fatalf("unexpected labels %v, %v", got, err)
+	}
+	for _, bad := range []string{`not json`, `{"bad key!":"x"}`} {
+		if _, err := decodeLabels(bad); err == nil {
+			t.Fatalf("expected %q to be rejected", bad)
+		}
+	}
 }

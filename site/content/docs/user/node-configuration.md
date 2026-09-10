@@ -103,6 +103,7 @@ You can further restrict access using the `attenuation` block. Local policies de
 
 1. **`rules`**: Inject custom Datalog facts asserting local node state (e.g., `time($time)`).
 2. **`policies`**: Add local restrictions (e.g., `deny if user("banned_user");`).
+3. **`checks`**: Require a condition for any connection to succeed (e.g., `check if label("region", "eu-west-1");`).
 
 ---
 

@@ -17,21 +17,32 @@ import 'package:url_launcher/url_launcher.dart';
 import 'sam_ffi.dart';
 import 'mcp_server.dart';
 
-String? _isolatedFetchControlPlaneInfo(String url) {
+// Isolate.run lives in these top-level functions, not in State methods: a closure
+// there shares its context with sibling setState closures, so `this` and its
+// DynamicLibrary would be sent to the isolate and rejected as unsendable.
+Future<String?> _isolatedFetchControlPlaneInfo(String url) => Isolate.run(() {
   try {
     return SamNodeLib().fetchControlPlaneInfoJSON(url);
   } catch (e) {
     return jsonEncode({'error': 'FFI_ERROR: ${e.toString()}'});
   }
-}
+});
 
-String? _isolatedEnroll(String dataDir, String controlPlaneText, String jwtText, bool allowLoopback) {
+Future<String?> _isolatedEnroll(String dataDir, String controlPlaneText, String jwtText, bool allowLoopback, String labelsText, String refreshToken) => Isolate.run(() {
   try {
-    return SamNodeLib().enroll(dataDir, controlPlaneText, jwtText, allowLoopback);
+    return SamNodeLib().enroll(dataDir, controlPlaneText, jwtText, allowLoopback, labelsText, refreshToken);
   } catch (e) {
     return e.toString();
   }
-}
+});
+
+Future<String?> _isolatedReEnroll(String dataDir, String labelsText) => Isolate.run(() {
+  try {
+    return SamNodeLib().reEnroll(dataDir, labelsText);
+  } catch (e) {
+    return e.toString();
+  }
+});
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -70,8 +81,15 @@ class _NodeControlPageState extends State<NodeControlPage> {
   final _controlPlaneController =
       TextEditingController(text: 'https://bananas.sam-mesh.dev');
   final _jwtController = TextEditingController();
+  // Saved by the FFI at enrollment so Re-enroll can skip the browser.
+  String _refreshToken = '';
   final _tokenController = TextEditingController(text: 'secret-token');
-  
+  // Labels are attested at enrollment; changing them requires re-enrolling.
+  // The field is saved here after a successful enrollment and read back at
+  // launch, like attenuation.json.
+  static const _labelsFile = 'labels';
+  final _labelsController = TextEditingController();
+
   static const _exposeChannel = MethodChannel('com.example.sam_agent/mesh_expose');
 
   late SamNodeLib _samLib;
@@ -92,12 +110,20 @@ class _NodeControlPageState extends State<NodeControlPage> {
 
   // External MCP Bridging State: read when the node starts, since services
   // are declared in the start configuration.
-  final _externalMcpUrlController = TextEditingController(text: 'http://127.0.0.1:8080');
-  final _externalMcpNameController = TextEditingController(text: 'android-remote');
-  final _externalMcpDescController = TextEditingController(text: 'External Android Remote Control MCP');
+  final _externalMcpUrlController = TextEditingController();
+  final _externalMcpNameController = TextEditingController();
+  final _externalMcpDescController = TextEditingController();
+
+  // Local attenuation, one Datalog statement per line. Persisted so it
+  // survives a relaunch, like the enrolled labels.
+  static const _attenuationFile = 'attenuation.json';
+  final _attenuationRulesController = TextEditingController();
+  final _attenuationPoliciesController = TextEditingController();
+  final _attenuationChecksController = TextEditingController();
 
   late SamDartMcpServer _embeddedMcpServer;
-  int _selectedTab = 0; // 0 = Dashboard, 1 = Services
+  bool _starting = false;
+  int _selectedTab = 0; // 0 = Dashboard, 1 = Services, 2 = Config
 
   @override
   void initState() {
@@ -116,9 +142,13 @@ class _NodeControlPageState extends State<NodeControlPage> {
     _controlPlaneController.dispose();
     _jwtController.dispose();
     _tokenController.dispose();
+    _labelsController.dispose();
     _externalMcpUrlController.dispose();
     _externalMcpNameController.dispose();
     _externalMcpDescController.dispose();
+    _attenuationRulesController.dispose();
+    _attenuationPoliciesController.dispose();
+    _attenuationChecksController.dispose();
     super.dispose();
   }
 
@@ -126,6 +156,11 @@ class _NodeControlPageState extends State<NodeControlPage> {
     final appDir = await getApplicationDocumentsDirectory();
     final dataDir = '${appDir.path}/sam_data';
     final enrolled = _samLib.isEnrolled(dataDir);
+    await _loadAttenuation(dataDir);
+    final labelsFile = File('$dataDir/$_labelsFile');
+    if (await labelsFile.exists()) {
+      _labelsController.text = await labelsFile.readAsString();
+    }
     setState(() {
       _isEnrolled = enrolled;
       if (enrolled) {
@@ -134,6 +169,75 @@ class _NodeControlPageState extends State<NodeControlPage> {
         _nodeID = _samLib.getNodeID() ?? '';
       }
     });
+  }
+
+  List<String> _splitStatements(String text) => text
+      .split('\n')
+      .map((line) => line.trim())
+      .where((line) => line.isNotEmpty)
+      .toList();
+
+  Future<void> _loadAttenuation(String dataDir) async {
+    final file = File('$dataDir/$_attenuationFile');
+    if (!await file.exists()) return;
+    try {
+      final saved =
+          jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+      String join(String key) =>
+          saved[key] is List ? (saved[key] as List).join('\n') : '';
+      _attenuationRulesController.text = join('rules');
+      _attenuationPoliciesController.text = join('policies');
+      _attenuationChecksController.text = join('checks');
+    } catch (e) {
+      debugPrint('DEBUG: Failed to read attenuation config: $e');
+    }
+  }
+
+  // The field keeps the CLI's old --labels wire format. Only the split lives
+  // here; the FFI validates keys and values with the CLI's rules.
+  Map<String, String> _parseLabels(String text) {
+    final labels = <String, String>{};
+    for (final part in text.split(',')) {
+      final entry = part.trim();
+      if (entry.isEmpty) continue;
+      final eq = entry.indexOf('=');
+      if (eq < 0) {
+        throw FormatException('invalid label "$entry": expected key=value');
+      }
+      labels[entry.substring(0, eq).trim()] = entry.substring(eq + 1).trim();
+    }
+    return labels;
+  }
+
+  // Reports a malformed field through _status and returns null so the
+  // caller can bail out before touching the FFI.
+  Map<String, String>? _labelsOrReport(String text, String failure) {
+    try {
+      return _parseLabels(text);
+    } on FormatException catch (e) {
+      setState(() => _status = '$failure: ${e.message}');
+      return null;
+    }
+  }
+
+  Future<void> _saveLabels(String dataDir, String text) async {
+    try {
+      await Directory(dataDir).create(recursive: true);
+      await File('$dataDir/$_labelsFile').writeAsString(text);
+    } catch (e) {
+      debugPrint('DEBUG: Failed to save labels: $e');
+    }
+  }
+
+  Future<void> _saveAttenuation(
+      String dataDir, Map<String, List<String>> attenuation) async {
+    try {
+      await Directory(dataDir).create(recursive: true);
+      await File('$dataDir/$_attenuationFile')
+          .writeAsString(jsonEncode(attenuation));
+    } catch (e) {
+      debugPrint('DEBUG: Failed to save attenuation config: $e');
+    }
   }
 
   String _generateCodeVerifier() {
@@ -160,7 +264,7 @@ class _NodeControlPageState extends State<NodeControlPage> {
     try {
       final controlPlaneUrl = _controlPlaneController.text.trim();
       debugPrint('DEBUG: Fetching control plane info from $controlPlaneUrl');
-      final infoJson = await Isolate.run(() => _isolatedFetchControlPlaneInfo(controlPlaneUrl));
+      final infoJson = await _isolatedFetchControlPlaneInfo(controlPlaneUrl);
       debugPrint('DEBUG: Control plane info JSON: $infoJson');
       if (infoJson == null) {
         throw Exception('Failed to fetch control plane info');
@@ -232,7 +336,9 @@ class _NodeControlPageState extends State<NodeControlPage> {
         'response_type': 'code',
         'client_id': clientId,
         'redirect_uri': redirectUri,
-        'scope': 'openid email profile',
+        'scope': 'openid email profile offline_access',
+        'access_type': 'offline',
+        'prompt': 'consent',
         'state': state,
         'code_challenge': challenge,
         'code_challenge_method': 'S256',
@@ -335,6 +441,7 @@ class _NodeControlPageState extends State<NodeControlPage> {
       if (jwt == null) {
         throw Exception('No token received');
       }
+      _refreshToken = tokenData['refresh_token'] ?? '';
 
       setState(() {
         _jwtController.text = jwt;
@@ -363,7 +470,7 @@ class _NodeControlPageState extends State<NodeControlPage> {
     try {
       final controlPlaneUrl = _controlPlaneController.text.trim();
       debugPrint('DEBUG: Device Login: Fetching control plane info from $controlPlaneUrl');
-      final infoJson = await Isolate.run(() => _isolatedFetchControlPlaneInfo(controlPlaneUrl));
+      final infoJson = await _isolatedFetchControlPlaneInfo(controlPlaneUrl);
       if (infoJson == null) throw Exception('Failed to fetch control plane info');
 
       final info = jsonDecode(infoJson);
@@ -402,7 +509,7 @@ class _NodeControlPageState extends State<NodeControlPage> {
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: {
           'client_id': clientId,
-          'scope': 'openid email profile',
+          'scope': 'openid email profile offline_access',
           if (audience != null && audience.isNotEmpty) 'audience': audience,
         },
       );
@@ -459,6 +566,7 @@ class _NodeControlPageState extends State<NodeControlPage> {
           final data = jsonDecode(response.body);
           final jwt = data['id_token'] ?? data['access_token'];
           if (jwt != null) {
+            _refreshToken = data['refresh_token'] ?? '';
             setState(() {
               _jwtController.text = jwt;
               _status = 'Token obtained via Device Flow! Enrolling...';
@@ -574,9 +682,12 @@ class _NodeControlPageState extends State<NodeControlPage> {
     final dataDir = '${appDir.path}/sam_data';
     final controlPlaneText = _controlPlaneController.text;
     final jwtText = _jwtController.text;
-    final err = await Isolate.run(() {
-      return _isolatedEnroll(dataDir, controlPlaneText, jwtText, true);
-    });
+    final labelsText = _labelsController.text.trim();
+    final labels = _labelsOrReport(labelsText, 'Enrollment failed');
+    if (labels == null) return;
+    final err = await _isolatedEnroll(dataDir, controlPlaneText, jwtText, true,
+        jsonEncode(labels), _refreshToken);
+    if (err == null) await _saveLabels(dataDir, labelsText);
 
     setState(() {
       if (err != null) {
@@ -586,6 +697,38 @@ class _NodeControlPageState extends State<NodeControlPage> {
         _isEnrolled = true; // Switch to Dashboard
       }
     });
+  }
+
+  // Silent path first: the refresh token saved at enrollment buys a JWT.
+  // Any failure (none saved, expired, revoked) falls back to the browser.
+  Future<void> _reEnroll() async {
+    final labelsText = _labelsController.text.trim();
+    final labels = _labelsOrReport(labelsText, 'Re-enroll failed');
+    if (labels == null) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(_status)));
+      return;
+    }
+    setState(() {
+      _loggingIn = true;
+      _status = 'Re-enrolling...';
+    });
+    final appDir = await getApplicationDocumentsDirectory();
+    final dataDir = '${appDir.path}/sam_data';
+    final err = await _isolatedReEnroll(dataDir, jsonEncode(labels));
+    if (err == null) {
+      await _saveLabels(dataDir, labelsText);
+      setState(() {
+        _loggingIn = false;
+        _status = 'Re-enrolled';
+      });
+    } else {
+      debugPrint('DEBUG: silent re-enroll failed, using the browser: $err');
+      await _loginAndEnroll();
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(_status)));
   }
 
   void _startPolling() {
@@ -622,13 +765,40 @@ class _NodeControlPageState extends State<NodeControlPage> {
   }
 
   Future<void> _start() async {
+    // Backstop for the disabled button while a start is in flight.
+    if (_starting) return;
+    setState(() {
+      _starting = true;
+    });
+    try {
+      await _startNode();
+    } finally {
+      if (mounted) {
+        setState(() {
+          _starting = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _startNode() async {
     final appDir = await getApplicationDocumentsDirectory();
     final dataDir = '${appDir.path}/sam_data';
+    final labels =
+        _labelsOrReport(_labelsController.text.trim(), 'Start failed');
+    if (labels == null) return;
 
     // The embedded MCP backend must be listening before the node starts:
     // services are declared in the start configuration and probed at startup,
     // there is no runtime registration.
-    await _embeddedMcpServer.start(port: 9090);
+    try {
+      await _embeddedMcpServer.start(port: 9090);
+    } catch (e) {
+      setState(() {
+        _status = 'Start failed: embedded MCP server: $e';
+      });
+      return;
+    }
 
     final services = <Map<String, String>>[
       {
@@ -648,6 +818,13 @@ class _NodeControlPageState extends State<NodeControlPage> {
         },
     ];
 
+    final attenuation = {
+      'rules': _splitStatements(_attenuationRulesController.text),
+      'policies': _splitStatements(_attenuationPoliciesController.text),
+      'checks': _splitStatements(_attenuationChecksController.text),
+    };
+    await _saveAttenuation(dataDir, attenuation);
+
     final err = _samLib.start({
       'dataDir': dataDir,
       'controlPlaneURL': _controlPlaneController.text,
@@ -656,7 +833,9 @@ class _NodeControlPageState extends State<NodeControlPage> {
       'apiToken': _tokenController.text,
       'allowLoopback': true,
       'enableRelay': false,
+      'labels': labels,
       'services': services,
+      if (attenuation.values.any((l) => l.isNotEmpty)) 'attenuation': attenuation,
     });
 
     if (err != null) {
@@ -688,7 +867,7 @@ class _NodeControlPageState extends State<NodeControlPage> {
     _pollingTimer?.cancel();
     _embeddedMcpServer.stop();
     final err = _samLib.stop();
-    
+
     // Stop Android Foreground Service
     try {
       _exposeChannel.invokeMethod('stopBackgroundService');
@@ -755,10 +934,12 @@ class _NodeControlPageState extends State<NodeControlPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('SAM Node Mobile')),
-      body: _isEnrolled == true
-          ? (_selectedTab == 0 ? _buildDashboardView() : _buildServicesView())
-          : _buildBody(),
-      bottomNavigationBar: _isEnrolled == true
+      body: _selectedTab == 0
+          ? _buildBody()
+          : _selectedTab == 1
+              ? _buildServicesView()
+              : _buildConfigView(),
+      bottomNavigationBar: _isEnrolled != null
           ? BottomNavigationBar(
               currentIndex: _selectedTab,
               onTap: (index) {
@@ -774,6 +955,10 @@ class _NodeControlPageState extends State<NodeControlPage> {
                 BottomNavigationBarItem(
                   icon: Icon(Icons.electrical_services),
                   label: 'Services',
+                ),
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.settings),
+                  label: 'Config',
                 ),
               ],
             )
@@ -873,6 +1058,9 @@ class _NodeControlPageState extends State<NodeControlPage> {
                     TextFormField(
                       controller: _externalMcpUrlController,
                       enabled: !isRunning,
+                      inputFormatters: [
+                        FilteringTextInputFormatter.deny(RegExp(r'\s'))
+                      ],
                       decoration: const InputDecoration(
                         labelText: 'External MCP Server URL',
                         hintText: 'http://127.0.0.1:8080',
@@ -895,6 +1083,7 @@ class _NodeControlPageState extends State<NodeControlPage> {
                       enabled: !isRunning,
                       decoration: const InputDecoration(
                         labelText: 'Description',
+                        hintText: 'External Android Remote Control MCP',
                         border: OutlineInputBorder(),
                       ),
                     ),
@@ -905,6 +1094,128 @@ class _NodeControlPageState extends State<NodeControlPage> {
           ],
         ),
       );
+  }
+
+  Widget _buildConfigView() {
+    final bool isRunning = _running;
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Labels',
+                      style:
+                          TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                  const SizedBox(height: 6),
+                  const Text(
+                    'Attested by the control plane. Re-enroll re-attests '
+                    'them with the saved login; the browser opens only if '
+                    'that session expired. The node keeps its identity.',
+                    style: TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                  const SizedBox(height: 10),
+                  _buildConfigField(
+                    controller: _labelsController,
+                    label: 'Labels (key=value, comma-separated)',
+                    hint: 'region=eu-west-1',
+                    maxLines: 1,
+                    enabled: !_loggingIn && !isRunning,
+                  ),
+                  if (_isEnrolled == true) ...[
+                    const SizedBox(height: 10),
+                    ElevatedButton.icon(
+                      onPressed: _loggingIn || isRunning ? null : _reEnroll,
+                      icon: _loggingIn
+                          ? const SizedBox(
+                              height: 20,
+                              width: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Icon(Icons.login),
+                      label: const Text('Re-enroll to apply'),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Limit Who May Call This Node',
+                      style:
+                          TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                  const SizedBox(height: 6),
+                  const Text(
+                    'Datalog attenuation, one statement per line. Read when '
+                    'the node starts; fill these fields before pressing '
+                    'Start. A syntax error fails the start.',
+                    style: TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                  const SizedBox(height: 10),
+                  _buildConfigField(
+                    controller: _attenuationRulesController,
+                    label: 'Rules',
+                    hint: 'time(2026-06-30T00:00:00Z) <- true;',
+                    enabled: !isRunning,
+                  ),
+                  const SizedBox(height: 10),
+                  _buildConfigField(
+                    controller: _attenuationPoliciesController,
+                    label: 'Policies',
+                    hint: 'deny if user("untrusted_sub_id");',
+                    enabled: !isRunning,
+                  ),
+                  const SizedBox(height: 10),
+                  _buildConfigField(
+                    controller: _attenuationChecksController,
+                    label: 'Checks',
+                    hint: 'check if label("region", "eu-west-1");',
+                    enabled: !isRunning,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Phone keyboards autocorrect and capitalise Datalog and key=value into
+  // something the parser rejects.
+  Widget _buildConfigField({
+    required TextEditingController controller,
+    required String label,
+    required String hint,
+    required bool enabled,
+    int maxLines = 4,
+  }) {
+    return TextFormField(
+      controller: controller,
+      enabled: enabled,
+      maxLines: maxLines,
+      autocorrect: false,
+      enableSuggestions: false,
+      textCapitalization: TextCapitalization.none,
+      style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+      decoration: InputDecoration(
+        labelText: label,
+        hintText: hint,
+        hintStyle: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+        alignLabelWithHint: true,
+        border: const OutlineInputBorder(),
+      ),
+    );
   }
 
   Widget _buildEnrollmentView() {
@@ -922,6 +1233,8 @@ class _NodeControlPageState extends State<NodeControlPage> {
           const SizedBox(height: 30),
           TextField(
             controller: _controlPlaneController,
+            // A pasted URL often carries a trailing space or newline.
+            inputFormatters: [FilteringTextInputFormatter.deny(RegExp(r'\s'))],
             decoration: const InputDecoration(
               labelText: 'Control plane URL',
               border: OutlineInputBorder(),
@@ -948,6 +1261,12 @@ class _NodeControlPageState extends State<NodeControlPage> {
             label: const Text('Device Login (TV / Other Device)'),
             style: ElevatedButton.styleFrom(
                 padding: const EdgeInsets.symmetric(vertical: 16)),
+          ),
+          const SizedBox(height: 10),
+          const Text(
+            'Set labels on the Config tab before enrolling.',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 12, color: Colors.grey),
           ),
           const SizedBox(height: 30),
           if (_status.isNotEmpty &&
@@ -1098,9 +1417,9 @@ class _NodeControlPageState extends State<NodeControlPage> {
             children: [
               Expanded(
                 child: ElevatedButton.icon(
-                  onPressed: isRunning ? null : _start,
+                  onPressed: (isRunning || _starting) ? null : _start,
                   icon: const Icon(Icons.play_arrow),
-                  label: const Text('Start'),
+                  label: Text(_starting ? 'Starting…' : 'Start'),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.green,
                     foregroundColor: Colors.white,

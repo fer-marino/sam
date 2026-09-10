@@ -26,19 +26,21 @@ To build the app, you must first compile the Go FFI library and bundle it inside
 
 ### 1. Compile FFI Library
 
-Run one of the following commands from the **repository root directory**:
+Run one of the following from the **repository root directory**. The `mobile-ffi-*` targets only build into `bin/`; the `cp` step puts the library where the Flutter project loads it from. (`make mobile-app-apk` and `make mobile-app-apk-emulator` do build, copy and release APK in one go.)
 
-*   **For Android ARM64 Devices (Physical Phones)**:
+*   **For Android ARM64 (physical phones, and emulators on Apple Silicon hosts)**:
     ```bash
     make mobile-ffi-android
+    mkdir -p mobile/sam-node-app/android/app/src/main/jniLibs/arm64-v8a
+    cp bin/android/libsam.so mobile/sam-node-app/android/app/src/main/jniLibs/arm64-v8a/
     ```
-    *Copies the binary to `mobile/sam-node-app/android/app/src/main/jniLibs/arm64-v8a/libsam.so`*
 
-*   **For Android x86_64 Emulators (AVD)**:
+*   **For Android x86_64 emulators (Intel and Linux hosts)**:
     ```bash
     make mobile-ffi-android-x86_64
+    mkdir -p mobile/sam-node-app/android/app/src/main/jniLibs/x86_64
+    cp bin/android-x86_64/libsam.so mobile/sam-node-app/android/app/src/main/jniLibs/x86_64/
     ```
-    *Copies the binary to `mobile/sam-node-app/android/app/src/main/jniLibs/x86_64/libsam.so`*
 
 *   **For iOS Devices**:
     ```bash
@@ -96,6 +98,7 @@ Exposes capabilities directly to the OS registry, allowing native assistants (li
 
 1.  **Dashboard Tab**: Displays current status, Node ID, connected peers, and DHT size.
 2.  **Services Tab**: Allows enabling/disabling embedded sensors (Battery/Location) and bridging external local MCP servers.
+3.  **Config Tab**: The node's labels and attenuation, the app's stand-in for `sam-node.yaml`. Labels (comma-separated `key=value`) are set here; the control plane attests them into the node's Biscuit at enrollment, so changing them later means pressing Re-enroll, which re-attests them with the login session saved at enrollment (the browser opens only if that session has expired) and keeps the node's identity. Attenuation is Datalog rules, policies and checks that limit who may call this node, one statement per line (e.g. `check if label("region", "eu-west-1");`). They are read when the node starts, and a syntax error fails the start. Same syntax and same errors as the `attenuation` block of `sam-node.yaml`; see [Node configuration §3](../../site/content/docs/user/node-configuration.md#3-defining-local-security-target-attenuation).
 
 ---
 

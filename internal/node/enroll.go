@@ -119,11 +119,10 @@ func (n *SamNode) enrollHTTP(ctx context.Context, controlPlaneURL, jwt string, p
 	return n.processEnrollResponse(resp)
 }
 
-// recoverStaleIdentity re-enrolls over HTTP with a JWT obtained from the
-// stored refresh token, keeping the node's PeerID. It must not touch n.Host:
-// it runs before the host exists, and router connection happens in the
-// normal startup path afterwards.
-func (n *SamNode) recoverStaleIdentity(ctx context.Context) error {
+// ReEnrollWithRefreshToken re-enrolls over HTTP with a JWT from the stored
+// refresh token, keeping the PeerID. Must not touch n.Host: startup recovery
+// runs it before the host exists, and the mobile app on a never-started node.
+func (n *SamNode) ReEnrollWithRefreshToken(ctx context.Context) error {
 	controlPlaneURL, err := n.Store.LoadControlPlaneURL()
 	if err != nil || controlPlaneURL == "" {
 		return fmt.Errorf("no control plane URL in store")

@@ -104,6 +104,7 @@ deploy_chart() {
     --set controlPlane.allowedAudiences="${ALLOWED_AUDIENCES//,/\\,}" \
     --set controlPlane.insecureSkipTlsVerify=true \
     --set 'bootstrap.nodeServices={*}' \
+    --set 'bootstrap.nodeLabels={*}' \
     --set 'bootstrap.nodeMembers={sam:system:authenticated}' \
     --set gateway.enabled=true \
     --set gateway.className=cloud-provider-kind \
@@ -131,10 +132,20 @@ tmuxs() { tmux -L samsocket -f /dev/null "$@"; }
 show_cluster_logs() {
   tmuxs kill-session -t "${SESSION}" 2>/dev/null || true
 
+  # Looked up here, not inherited, so `-l` gets the header too; one direct query rather
+  # than gateway_ip's polling, so the logs still open when a gateway has no address.
+  local main_ip dex_ip
+  main_ip="$(kubectl --context "${KCTX}" -n "${NAMESPACE}" get gateway sam-mesh-gateway -o jsonpath='{.status.addresses[0].value}' 2>/dev/null || true)"
+  dex_ip="$(kubectl --context "${KCTX}" -n "${NAMESPACE}" get gateway sam-mesh-dex-gateway -o jsonpath='{.status.addresses[0].value}' 2>/dev/null || true)"
+
   tmuxs new-session -d -s "${SESSION}" -n mesh "$(logs control-plane 'deploy/sam-mesh-control-plane')" \; set -t "${SESSION}" destroy-unattached off
   tmuxs split-window -t "${SESSION}:0" "$(logs router 'statefulset/sam-mesh-router')"
   tmuxs set-option -t "${SESSION}" -g pane-border-status top
   tmuxs set-option -t "${SESSION}" -g pane-border-format ' #{pane_title} '
+  tmuxs set-option -t "${SESSION}" status-position top
+  tmuxs set-option -t "${SESSION}" status-left-length 250
+  tmuxs set-option -t "${SESSION}" status-right ''
+  tmuxs set-option -t "${SESSION}" status-left " console http://${main_ip:-?}${CONSOLE_BASE_PATH}/  control plane http://${main_ip:-?}  dex http://${dex_ip:-?}/dex "
 
   # Title the tmux panes in creation order: control-plane, router.
   titles=(control-plane router)

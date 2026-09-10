@@ -56,11 +56,17 @@ type MobileConfig struct {
 	LogLevel          string `json:"logLevel"`
 	DiscoveryInterval string `json:"discoveryInterval"`
 	ListenAddrs       string `json:"listenAddrs"` // comma-separated
-	AllowLoopback     bool   `json:"allowLoopback"`
-	EnableRelay       bool   `json:"enableRelay"`
+	// Labels mirror the config file's labels map. They are attested only at
+	// enrollment; a start re-announces them and re-enrollment re-sends them.
+	Labels        map[string]string `json:"labels"`
+	AllowLoopback bool              `json:"allowLoopback"`
+	EnableRelay   bool              `json:"enableRelay"`
 	// Services this node exposes, declared at start like the node config
 	// file's services block; there is no runtime registration.
 	Services []MobileService `json:"services,omitempty"`
+	// Local attenuation, same shape as the config file's block. Go matches
+	// these keys to the yaml-tagged fields case-insensitively.
+	Attenuation api.Attenuation `json:"attenuation"`
 }
 
 // MobileService is one statically declared service.
@@ -172,18 +178,24 @@ func StartNode(configJSON string) error {
 
 	// Create and initialize the node
 	var services []api.ServiceConfig
-	for i, svc := range config.Services {
-		if err := api.ValidateServiceFormat(svc.Type + "://" + svc.Name); err != nil {
-			_ = store.Close()
-			activeStore = nil
-			return fmt.Errorf("invalid service at index %d: %w", i, err)
-		}
+	for _, svc := range config.Services {
 		services = append(services, api.ServiceConfig{
 			Type:        svc.Type,
 			Name:        svc.Name,
 			Description: svc.Description,
 			TargetURL:   svc.TargetURL,
 		})
+	}
+
+	nodeConfig, err := node.CompleteNodeConfig(api.NodeConfig{
+		Attenuation: config.Attenuation,
+		Services:    services,
+		Labels:      config.Labels,
+	})
+	if err != nil {
+		_ = store.Close()
+		activeStore = nil
+		return err
 	}
 
 	samNode, err := node.NewSamNode(node.Options{
@@ -197,7 +209,7 @@ func StartNode(configJSON string) error {
 		ListenAddrs:          listenAddrs,
 		EnableRelay:          config.EnableRelay,
 		AllowLoopback:        config.AllowLoopback,
-		NodeConfig:           &node.NodeConfigComplete{Services: services},
+		NodeConfig:           nodeConfig,
 		MonitorBootstrap:     2 * time.Minute,
 		MonitorInterval:      1 * time.Minute,
 		AutoRelayMinInterval: 30 * time.Second,
@@ -311,8 +323,30 @@ func GetNodeID() string {
 	return ""
 }
 
-// EnrollNode enrolls a node.
-func EnrollNode(dataDir string, controlPlaneURL string, jwt string, allowLoopback bool) error {
+// decodeLabels reads the JSON object the app sends for labels; an empty
+// string means none. Validation is the CLI's, so the errors match.
+func decodeLabels(jsonText string) (map[string]string, error) {
+	var labels map[string]string
+	if jsonText != "" {
+		if err := json.Unmarshal([]byte(jsonText), &labels); err != nil {
+			return nil, fmt.Errorf("invalid labels: %w", err)
+		}
+	}
+	if err := api.ValidateLabels(labels); err != nil {
+		return nil, fmt.Errorf("invalid labels: %w", err)
+	}
+	return labels, nil
+}
+
+// EnrollNode enrolls a node. Labels arrive as a JSON object and are minted
+// into the node's Biscuit here; changing them means enrolling again, which
+// reuses the stored key so the PeerID survives.
+func EnrollNode(dataDir string, controlPlaneURL string, jwt string, allowLoopback bool, labels string, refreshToken string) error {
+	parsedLabels, err := decodeLabels(labels)
+	if err != nil {
+		return err
+	}
+
 	_ = os.MkdirAll(dataDir, 0700)
 	logFilePath := filepath.Join(dataDir, "node.log")
 	golog.SetupLogging(golog.Config{
@@ -354,6 +388,7 @@ func EnrollNode(dataDir string, controlPlaneURL string, jwt string, allowLoopbac
 		Store:         store,
 		AllowLoopback: allowLoopback,
 		ListenAddrs:   listenAddrs,
+		NodeConfig:    &node.NodeConfigComplete{Labels: parsedLabels},
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create node for enrollment: %w", err)
@@ -373,6 +408,9 @@ func EnrollNode(dataDir string, controlPlaneURL string, jwt string, allowLoopbac
 
 	if err := store.SaveControlPlaneURL(controlPlaneURL); err != nil {
 		return fmt.Errorf("failed to save control plane URL: %w", err)
+	}
+	if refreshToken != "" {
+		saveRefreshSession(enrollCtx, store, controlPlaneURL, refreshToken)
 	}
 
 	_, _, _, err = node.SyncMeshConfig(enrollCtx, store)
@@ -484,4 +522,54 @@ func CallRemoteTool(peerIDStr string, toolName string, argsJSON string) string {
 	}
 
 	return string(jsonBytes)
+}
+
+// saveRefreshSession stores what ReEnrollNode needs to buy a JWT later.
+// Failures only cost the silent path, so they are logged, not returned.
+func saveRefreshSession(ctx context.Context, store *node.Store, controlPlaneURL, refreshToken string) {
+	if err := store.SaveRefreshToken(refreshToken); err != nil {
+		logger.Warnf("Failed to save refresh token: %v", err)
+		return
+	}
+	info, err := node.FetchControlPlaneInfo(ctx, controlPlaneURL)
+	if err != nil {
+		logger.Warnf("Failed to fetch control plane info for OIDC config: %v", err)
+		return
+	}
+	if err := store.SaveOIDCConfig(info.OidcIssuer, info.ClientId, info.Audience); err != nil {
+		logger.Warnf("Failed to save OIDC config: %v", err)
+	}
+}
+
+// ReEnrollNode re-attests labels without a browser: the refresh token saved
+// at enrollment buys a JWT and the stored key keeps the PeerID. Fails when
+// no token was saved or it expired; the app then falls back to the browser.
+func ReEnrollNode(dataDir string, labels string) error {
+	if activeNode != nil || unauthSrv != nil {
+		return errors.New("stop the node before re-enrolling")
+	}
+	parsedLabels, err := decodeLabels(labels)
+	if err != nil {
+		return err
+	}
+	store, err := node.NewStore(dataDir)
+	if err != nil {
+		return fmt.Errorf("failed to open store: %w", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	meshNode, err := node.NewSamNode(node.Options{
+		PrivKey:       node.GetOrGenerateKey(store),
+		Store:         store,
+		AllowLoopback: true,
+		ListenAddrs:   []string{"/ip4/127.0.0.1/tcp/0"},
+		NodeConfig:    &node.NodeConfigComplete{Labels: parsedLabels},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create node for re-enrollment: %w", err)
+	}
+	if err := meshNode.ReEnrollWithRefreshToken(context.Background()); err != nil {
+		return fmt.Errorf("re-enrollment failed: %w", err)
+	}
+	return nil
 }

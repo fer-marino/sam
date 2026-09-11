@@ -163,3 +163,42 @@ func TestStdioBridge_SendWritesToStdin(t *testing.T) {
 		t.Fatalf("Send: stdin got %q, want %q", got, want)
 	}
 }
+
+// TestSubscriberQueue_PopReleasesBackingArray guards against a real memory
+// retention bug flagged in review: re-slicing alone (q.buf = q.buf[1:])
+// leaves the popped element's string header live in the backing array,
+// keeping its bytes reachable for as long as the array itself is - which,
+// for a long-lived session, is every line ever queued. pop must clear the
+// popped slot and drop the backing array entirely once drained.
+func TestSubscriberQueue_PopReleasesBackingArray(t *testing.T) {
+	q := newSubscriberQueue()
+	q.push("a")
+	q.push("b")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// A second reference into the same backing array, captured before any
+	// pop: re-slicing q.buf alone wouldn't touch this array's contents, so
+	// backing[0] would still read "a" after popping it if pop didn't
+	// explicitly clear the slot.
+	q.mu.Lock()
+	backing := q.buf[:2:2]
+	q.mu.Unlock()
+
+	if got, ok, err := q.pop(ctx); err != nil || !ok || got != "a" {
+		t.Fatalf("pop 1: got %q, ok=%v, err=%v", got, ok, err)
+	}
+	if backing[0] != "" {
+		t.Fatalf("pop: backing array slot still holds %q after being popped, want \"\" (string not released)", backing[0])
+	}
+
+	if got, ok, err := q.pop(ctx); err != nil || !ok || got != "b" {
+		t.Fatalf("pop 2: got %q, ok=%v, err=%v", got, ok, err)
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.buf != nil {
+		t.Fatalf("pop: buf = %#v after full drain, want nil (backing array not released)", q.buf)
+	}
+}

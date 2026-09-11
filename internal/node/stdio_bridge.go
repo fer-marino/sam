@@ -288,7 +288,18 @@ func (q *subscriberQueue) pop(ctx context.Context) (line string, ok bool, err er
 		q.mu.Lock()
 		if len(q.buf) > 0 {
 			line = q.buf[0]
+			// Re-slicing alone leaves the popped element's string header
+			// live in the backing array, keeping its bytes reachable for
+			// as long as the array itself is - which, for a long-lived
+			// session, is every line ever queued. Clear the slot before
+			// advancing, and drop the backing array entirely once drained,
+			// rather than let it sit at its peak size for the queue's
+			// remaining lifetime.
+			q.buf[0] = ""
 			q.buf = q.buf[1:]
+			if len(q.buf) == 0 {
+				q.buf = nil
+			}
 			q.mu.Unlock()
 			return line, true, nil
 		}

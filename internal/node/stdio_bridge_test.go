@@ -16,7 +16,10 @@ package node
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"io"
+	"sync"
 	"testing"
 	"time"
 )
@@ -42,23 +45,99 @@ func TestStdioBridge_SubscribeReceivesLines(t *testing.T) {
 	b, stdoutWriter, _ := newPipeBridge()
 	defer func() { _ = stdoutWriter.Close() }()
 
-	ch, unsub := b.Subscribe()
+	q, unsub := b.Subscribe()
 	defer unsub()
 
 	go func() {
 		_, _ = stdoutWriter.Write([]byte("hello\nworld\n"))
 	}()
 
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 	want := []string{"hello", "world"}
 	for _, w := range want {
-		select {
-		case got := <-ch:
-			if got != w {
-				t.Fatalf("Subscribe: got %q, want %q", got, w)
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatalf("Subscribe: timed out waiting for %q", w)
+		got, ok, err := q.pop(ctx)
+		if err != nil {
+			t.Fatalf("Subscribe: pop: %v", err)
 		}
+		if !ok {
+			t.Fatalf("Subscribe: queue closed before %q arrived", w)
+		}
+		if got != w {
+			t.Fatalf("Subscribe: got %q, want %q", got, w)
+		}
+	}
+}
+
+// TestStdioBridge_SubscribeDoesNotDropWhileConsumerIsBusy reproduces the
+// original bug: a burst of lines arrives while the subscriber isn't yet
+// blocked on a receive (e.g. a concurrent health-check probe still holding
+// StdioBridge.mu-adjacent work, or simply a goroutine that hasn't reached
+// its Read() call yet). The old bounded, drop-on-full channel lost lines in
+// exactly this window; the queue must never drop them.
+func TestStdioBridge_SubscribeDoesNotDropWhileConsumerIsBusy(t *testing.T) {
+	b, stdoutWriter, _ := newPipeBridge()
+	defer func() { _ = stdoutWriter.Close() }()
+
+	q, unsub := b.Subscribe()
+	defer unsub()
+
+	const n = 50
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < n; i++ {
+			_, _ = fmt.Fprintf(stdoutWriter, "line-%d\n", i)
+		}
+	}()
+	wg.Wait() // all n lines are written (and, on a slow reader, queued) before we ever call pop
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	for i := 0; i < n; i++ {
+		want := fmt.Sprintf("line-%d", i)
+		got, ok, err := q.pop(ctx)
+		if err != nil {
+			t.Fatalf("pop(%d): %v", i, err)
+		}
+		if !ok {
+			t.Fatalf("pop(%d): queue closed early, want %q", i, want)
+		}
+		if got != want {
+			t.Fatalf("pop(%d): got %q, want %q (a line was dropped or reordered)", i, got, want)
+		}
+	}
+}
+
+// TestStdioBridge_SubscribeCloseUnblocksPop ensures a pop() blocked waiting
+// for the next line returns promptly (ok=false) once the bridge's stdout
+// closes, rather than hanging forever.
+func TestStdioBridge_SubscribeCloseUnblocksPop(t *testing.T) {
+	b, stdoutWriter, _ := newPipeBridge()
+
+	q, unsub := b.Subscribe()
+	defer unsub()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_, ok, err := q.pop(ctx)
+		if err != nil {
+			t.Errorf("pop: %v", err)
+		}
+		if ok {
+			t.Errorf("pop: got ok=true after close, want false")
+		}
+	}()
+
+	_ = stdoutWriter.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("pop did not unblock after stdout closed")
 	}
 }
 

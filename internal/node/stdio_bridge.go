@@ -16,6 +16,7 @@ package node
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -33,11 +34,13 @@ type StdioBridge struct {
 	stdout  io.ReadCloser
 	mu      sync.Mutex
 	clients map[chan string]bool
+	queues  map[*subscriberQueue]bool
 	calls   map[string]chan string
 }
 
 func (b *StdioBridge) Start() {
 	b.clients = make(map[chan string]bool)
+	b.queues = make(map[*subscriberQueue]bool)
 	b.calls = make(map[string]chan string)
 	go func() {
 		scanner := bufio.NewScanner(b.stdout)
@@ -66,6 +69,9 @@ func (b *StdioBridge) Start() {
 				default:
 				}
 			}
+			for q := range b.queues {
+				q.push(line)
+			}
 			b.mu.Unlock()
 		}
 
@@ -74,6 +80,10 @@ func (b *StdioBridge) Start() {
 			close(ch)
 			delete(b.clients, ch)
 		}
+		for q := range b.queues {
+			q.closeQueue()
+		}
+		b.queues = make(map[*subscriberQueue]bool)
 		for _, ch := range b.calls {
 			close(ch)
 		}
@@ -200,27 +210,99 @@ func (b *StdioBridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// Subscribe registers a new subscriber channel for stdout lines and returns
-// it along with an idempotent unsubscribe function. Buffered (cap 10); drops
-// on slow consumers match the SSE behaviour in ServeHTTP.
-func (b *StdioBridge) Subscribe() (<-chan string, func()) {
-	ch := make(chan string, 10)
+// Subscribe registers a new subscriber queue for stdout lines and returns it
+// along with an idempotent unsubscribe function.
+//
+// Unlike the plain chan string clients map above (bounded cap 10, drops on a
+// slow consumer - fine for the ServeHTTP SSE feed, where a browser tab
+// missing a line just misses a live update), Subscribe's only caller is
+// bridgeTransport, i.e. an MCP request/response session: every line matters,
+// because the one dropped could be the exact reply a Read() call is blocked
+// on, with nothing left to ever wake it. bridgeTransport used to share the
+// same bounded, drop-on-full channel as SSE; a periodic health probe and a
+// live tools/call session subscribing to the same backend concurrently was
+// enough to lose a message that way, surfacing as a client-side EOF even
+// though the backend had answered correctly. Every subscriber here instead
+// gets its own unbounded, order-preserving queue.
+func (b *StdioBridge) Subscribe() (*subscriberQueue, func()) {
+	q := newSubscriberQueue()
 	b.mu.Lock()
-	b.clients[ch] = true
+	b.queues[q] = true
 	b.mu.Unlock()
 
 	var once sync.Once
 	unsub := func() {
 		once.Do(func() {
 			b.mu.Lock()
-			if b.clients[ch] {
-				delete(b.clients, ch)
-				close(ch)
-			}
+			delete(b.queues, q)
 			b.mu.Unlock()
+			q.closeQueue()
 		})
 	}
-	return ch, unsub
+	return q, unsub
+}
+
+// subscriberQueue is an unbounded, order-preserving mailbox for one
+// bridgeTransport session's stdout lines.
+//
+// push is called from the bridge's single stdout-scanning goroutine (with
+// StdioBridge.mu held) and must never block or drop a line. pop is called by
+// the session's own reader; it blocks until a line is queued, the bridge
+// closes the queue, or ctx is done.
+type subscriberQueue struct {
+	mu     sync.Mutex
+	buf    []string
+	closed bool
+	notify chan struct{} // capacity 1: a "there may be new work" flag, coalesced
+}
+
+func newSubscriberQueue() *subscriberQueue {
+	return &subscriberQueue{notify: make(chan struct{}, 1)}
+}
+
+func (q *subscriberQueue) push(line string) {
+	q.mu.Lock()
+	q.buf = append(q.buf, line)
+	q.mu.Unlock()
+	q.wake()
+}
+
+func (q *subscriberQueue) closeQueue() {
+	q.mu.Lock()
+	q.closed = true
+	q.mu.Unlock()
+	q.wake()
+}
+
+func (q *subscriberQueue) wake() {
+	select {
+	case q.notify <- struct{}{}:
+	default:
+	}
+}
+
+// pop returns the next queued line in FIFO order. ok is false only once the
+// queue has been closed and fully drained.
+func (q *subscriberQueue) pop(ctx context.Context) (line string, ok bool, err error) {
+	for {
+		q.mu.Lock()
+		if len(q.buf) > 0 {
+			line = q.buf[0]
+			q.buf = q.buf[1:]
+			q.mu.Unlock()
+			return line, true, nil
+		}
+		closed := q.closed
+		q.mu.Unlock()
+		if closed {
+			return "", false, nil
+		}
+		select {
+		case <-ctx.Done():
+			return "", false, ctx.Err()
+		case <-q.notify:
+		}
+	}
 }
 
 // Send writes data to the child's stdin, appending a newline.

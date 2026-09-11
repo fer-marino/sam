@@ -23,12 +23,12 @@ import (
 )
 
 // bridgeTransport adapts a StdioBridge to the mcp.Transport interface.
-// Reads pull lines from a Subscribe channel; writes go through Send.
+// Reads pull lines from a Subscribe queue; writes go through Send.
 // Multiple bridgeTransports can coexist on one bridge; JSON-RPC IDs
 // distinguish their responses, as with HTTP/SSE subscribers.
 type bridgeTransport struct {
 	bridge *StdioBridge
-	ch     <-chan string
+	queue  *subscriberQueue
 	unsub  func()
 }
 
@@ -37,22 +37,21 @@ func newBridgeTransport(b *StdioBridge) *bridgeTransport {
 }
 
 func (t *bridgeTransport) Connect(ctx context.Context) (mcp.Connection, error) {
-	ch, unsub := t.bridge.Subscribe()
-	t.ch = ch
+	queue, unsub := t.bridge.Subscribe()
+	t.queue = queue
 	t.unsub = unsub
 	return t, nil
 }
 
 func (t *bridgeTransport) Read(ctx context.Context) (jsonrpc.Message, error) {
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case line, ok := <-t.ch:
-		if !ok {
-			return nil, io.EOF
-		}
-		return jsonrpc.DecodeMessage([]byte(line))
+	line, ok, err := t.queue.pop(ctx)
+	if err != nil {
+		return nil, err
 	}
+	if !ok {
+		return nil, io.EOF
+	}
+	return jsonrpc.DecodeMessage([]byte(line))
 }
 
 func (t *bridgeTransport) Write(ctx context.Context, msg jsonrpc.Message) error {

@@ -15,6 +15,8 @@
 package node
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -24,6 +26,7 @@ import (
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -396,17 +399,196 @@ func TestDatapathIntegration_Unauthenticated(t *testing.T) {
 	}
 }
 
-// TestStdioDatapathIntegration exercised the local SSE/POST HTTP ingress
-// route for command backends (StdioBridge.ServeHTTP, reached via
-// baseService.Handler()). That route was removed along with
-// StdioBridge/bridgeTransport when command backends moved to a fresh
-// mcp.CommandTransport subprocess per session instead of multiplexing
-// every session over one shared stdio pipe - see the comment on
-// MCPService.backendTransport for why. The mesh stream path this test
-// did not cover (HandleStreamPassThrough, exercised by
-// TestDatapathIntegration above) is unaffected. Restoring a local-ingress
-// equivalent for command backends is left for a follow-up, not folded
-// into that change.
+func TestStdioDatapathIntegration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// 1. Setup: Create two in-memory nodes (Node A and Node B)
+	privA, _, _ := crypto.GenerateKeyPair(crypto.Ed25519, -1)
+	privB, _, _ := crypto.GenerateKeyPair(crypto.Ed25519, -1)
+
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+
+	storeA, err := NewStore(dirA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = storeA.Close() }()
+
+	storeB, err := NewStore(dirB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = storeB.Close() }()
+
+	nodeA, err := NewSamNode(Options{
+		PrivKey:           privA,
+		RouterAddrs:       nil,
+		Store:             storeA,
+		MeshID:            "test-mesh",
+		DiscoveryInterval: "1s",
+		ListenAddrs:       []string{"/ip4/127.0.0.1/tcp/0"},
+		EnableRelay:       false,
+		NodeConfig:        &NodeConfigComplete{},
+		KeyGracePeriod:    24 * time.Hour,
+		AllowLoopback:     true,
+		MonitorBootstrap:  2 * time.Minute,
+		MonitorInterval:   1 * time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodeA.BiscuitTimeout = 500 * time.Millisecond
+	if err := nodeA.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = nodeA.Host.Close() }()
+
+	nodeB, err := NewSamNode(Options{
+		PrivKey:           privB,
+		RouterAddrs:       nil,
+		Store:             storeB,
+		MeshID:            "test-mesh",
+		DiscoveryInterval: "1s",
+		ListenAddrs:       []string{"/ip4/127.0.0.1/tcp/0"},
+		EnableRelay:       false,
+		NodeConfig:        &NodeConfigComplete{},
+		KeyGracePeriod:    24 * time.Hour,
+		AllowLoopback:     true,
+		MonitorBootstrap:  2 * time.Minute,
+		MonitorInterval:   1 * time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodeB.BiscuitTimeout = 500 * time.Millisecond
+	if err := nodeB.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = nodeB.Host.Close() }()
+
+	// Setup identity for Node B (the caller proxy) and trust it on Node A
+	rootPub, rootPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("gen root: %v", err)
+	}
+	if err := buildAndSaveBiscuit(nodeB, rootPriv); err != nil {
+		t.Fatalf("buildAndSaveBiscuit: %v", err)
+	}
+	nodeA.keysMu.Lock()
+	nodeA.trustedKeys = append(nodeA.trustedKeys, TrustedKey{Key: rootPub, ReceivedAt: time.Now()})
+	nodeA.keysMu.Unlock()
+
+	// Connect Node B to Node A directly
+	err = nodeB.Host.Connect(ctx, peer.AddrInfo{ID: nodeA.Host.ID(), Addrs: nodeA.Host.Addrs()})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. Target Service: Register a stdio service on Node A using 'cat'
+	serviceName := "stdio-tool"
+	serviceInfo := &api.ServiceInfo{
+		Type: api.ServiceType_SERVICE_TYPE_MCP,
+		Name: serviceName,
+	}
+
+	req := &api.RegisterServiceRequest{
+		Service: serviceInfo,
+		Backend: &api.RegisterServiceRequest_Command{
+			Command: &api.CommandBackend{
+				Command: []string{"cat"},
+			},
+		},
+	}
+
+	// Manually add to services map to ensure it's registered for the test lookup
+	// and avoid double start by not calling RegisterService.
+	handler, cmd, err := createStdioBridgeHandler(req.Backend.(*api.RegisterServiceRequest_Command).Command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodeA.services.insertService(&testService{
+		info:    serviceInfo,
+		handler: handler,
+	})
+
+	defer func() {
+		_ = nodeA.UnregisterService(ctx, serviceName)
+		if cmd != nil && cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	}()
+
+	// Start the Sidecar server for Node B to get BoundHTTPAddr populated
+	nodeB.BoundHTTPAddr = "127.0.0.1:0" // Dummy
+
+	// 3. Execution: Node B makes requests via its local Egress Proxy
+	proxyHandler := createEgressProxy(nodeB)
+	proxyServer := httptest.NewServer(proxyHandler)
+	defer proxyServer.Close()
+
+	// Construct URLs
+	// http://localhost:<port>/sam/{peer_id}/{service_type}/{service_name}/{upstream_path}
+	sseURL := fmt.Sprintf("%s/sam/%s/mcp/%s/", proxyServer.URL, nodeA.Host.ID().String(), serviceName)
+	postURL := fmt.Sprintf("%s/sam/%s/mcp/%s/", proxyServer.URL, nodeA.Host.ID().String(), serviceName)
+
+	client := &http.Client{}
+
+	// Wait for DHT/routing to settle (retry mechanism)
+	var sseResp *http.Response
+	for i := 0; i < 3; i++ {
+		sseResp, err = client.Get(sseURL)
+		if err == nil && sseResp.StatusCode == http.StatusOK {
+			break
+		}
+		t.Logf("SSE Connect Attempt %d failed: %v, status: %v", i+1, err, sseResp)
+		time.Sleep(1 * time.Second)
+	}
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sseResp.Body.Close() }()
+
+	if sseResp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected SSE status OK, got %d", sseResp.StatusCode)
+	}
+
+	// Send a message via POST
+	testMessage := `{"jsonrpc":"2.0","method":"ping","id":1}`
+	postResp, err := client.Post(postURL, "application/json", bytes.NewBufferString(testMessage))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = postResp.Body.Close() }()
+
+	if postResp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected POST status OK, got %d", postResp.StatusCode)
+	}
+
+	// Read from SSE stream
+	reader := bufio.NewReader(sseResp.Body)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expectedPrefix := "data: "
+	if !strings.HasPrefix(line, expectedPrefix) {
+		t.Fatalf("Expected line to start with %q, got %q", expectedPrefix, line)
+	}
+
+	receivedMessage := strings.TrimPrefix(line, expectedPrefix)
+	receivedMessage = strings.TrimSpace(receivedMessage)
+
+	if receivedMessage != testMessage {
+		t.Fatalf("Expected to receive %q, got %q", testMessage, receivedMessage)
+	}
+
+	// Cancel context to close the SSE stream and allow server to close gracefully
+	cancel()
+}
 
 func TestDatapathHeadersAndRoutingTable(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

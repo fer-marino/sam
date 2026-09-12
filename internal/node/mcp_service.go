@@ -77,32 +77,13 @@ func (m *MCPService) Teardown() error {
 }
 
 // backendTransport builds a fresh MCP transport to this service's backend.
-//
-// A command backend gets its own subprocess, via mcp.CommandTransport, for
-// every call - the same "one fresh transport per session" shape as the URL
-// case, not a shared one. An earlier version of this multiplexed every
-// session for a command backend over one child process and one stdout
-// stream (StdioBridge/bridgeTransport, since deleted): every line
-// broadcast to every subscriber, relying on each session's own JSON-RPC id
-// to sort out which reply was whose. That doesn't hold - the go-sdk client
-// numbers requests from 1 per connection, so two concurrent sessions on the
-// same bridge could both send id:1 and each read the other's reply, not
-// just their own. Fixing the multiplexer to not do that (id rewriting, a
-// bridge-wide id space) is exactly the kind of protocol-level code this
-// package shouldn't own: stdio MCP is single-session by spec, and no SDK
-// multiplexes it, because a server-initiated request (sampling,
-// elicitation) has no attributable destination on a shared process. One
-// subprocess per session sidesteps all of it by construction, matching
-// what backendTransport already does for URL backends.
-//
-// The cost is a fresh process per Probe/Tools call and per mesh stream
-// instead of one long-lived one; command backends with slow startup pay
-// that repeatedly. Command backends also lose the local SSE/POST HTTP
-// ingress route StdioBridge.ServeHTTP used to provide (baseService.Init
-// no longer builds a handler for them) - the mesh stream path
-// (HandleStreamPassThrough) is what actually matters and is unaffected;
-// restoring a local-ingress equivalent is left for later, not folded into
-// this change.
+// Command backends get their own subprocess per call (mcp.CommandTransport),
+// not a shared one: the go-sdk client numbers requests from 1 per
+// connection, so a shared process risked one session reading another's
+// reply. Stdio MCP is single-session by spec, so this mirrors the URL
+// case's fresh-transport-per-session shape rather than giving the bridge a
+// per-session id space. Cost: a fresh process per call instead of one
+// long-lived one, so slow-starting backends pay startup repeatedly.
 func (m *MCPService) backendTransport() (mcp.Transport, error) {
 	switch x := m.backend.(type) {
 	case *api.RegisterServiceRequest_TargetUrl:

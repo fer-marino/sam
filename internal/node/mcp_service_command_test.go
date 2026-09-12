@@ -28,13 +28,10 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
-// TestEchoHelperProcess is not a real test: it's a subprocess entry point
-// (exec.Command(os.Args[0], "-test.run=...") self-re-exec, the same pattern
-// TestStartRenewalLoop_ExpiredAndFails in node_test.go uses), standing in
-// for a real command-spawned MCP backend. For every JSON-RPC line with an
-// "id" it reads on stdin, it echoes back a minimal success response on
-// stdout, tagged with its own PID so a test can tell which subprocess
-// answered.
+// TestEchoHelperProcess is a subprocess entry point (self-re-exec, as
+// node_test.go's TestStartRenewalLoop_ExpiredAndFails does), standing in
+// for a command-backed MCP server. It echoes each JSON-RPC call's id back
+// tagged with its own PID, so a test can tell which subprocess answered.
 func TestEchoHelperProcess(t *testing.T) {
 	if os.Getenv("GO_WANT_ECHO_HELPER") != "1" {
 		return
@@ -82,15 +79,9 @@ func newEchoCommandMCPService(t *testing.T) *MCPService {
 	}
 }
 
-// TestMCPService_BackendTransport_CommandBackendUsesSeparateSubprocess
-// pins the property the StdioBridge/bridgeTransport removal exists for:
-// backendTransport gives every caller of a command backend its own
-// subprocess, so two "sessions" that both happen to number their first
-// request id:1 - exactly what the go-sdk client does per connection -
-// each get their own reply, never the other's. Under the old shared-bridge
-// design this was a real, silent cross-session data leak (see the comment
-// on backendTransport); under the current one it can't happen, because
-// there is no shared process or id space to collide in.
+// Two calls, both sending id:1, must be answered by two different
+// subprocesses - not one shared one, which is how session A used to be
+// able to read session B's reply.
 func TestMCPService_BackendTransport_CommandBackendUsesSeparateSubprocess(t *testing.T) {
 	m := newEchoCommandMCPService(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -141,15 +132,8 @@ func TestMCPService_BackendTransport_CommandBackendUsesSeparateSubprocess(t *tes
 	}
 }
 
-// TestMCPService_BackendTransport_ConcurrentCallsDoNotCrossTalk drives two
-// concurrent connections through backendTransport at the same time, both
-// sending id:1 first the way independent go-sdk client sessions naturally
-// would, and asserts each connection's Read only ever returns its own
-// subprocess's reply. This is the direct regression test for the bug a
-// shared-process design has and a per-session one cannot: session A
-// silently consuming session B's reply because both used the same
-// JSON-RPC id on a process whose replies were broadcast to every
-// subscriber.
+// Same check under concurrency: two sessions running at once, each always
+// sending id:1, must never see a reply that isn't theirs.
 func TestMCPService_BackendTransport_ConcurrentCallsDoNotCrossTalk(t *testing.T) {
 	m := newEchoCommandMCPService(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

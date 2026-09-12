@@ -53,9 +53,6 @@ func TestBaseService_InitURLBackend_BuildsReverseProxy(t *testing.T) {
 	if _, ok := b.handler.(*httputil.ReverseProxy); !ok {
 		t.Fatalf("handler type: got %T, want *httputil.ReverseProxy", b.handler)
 	}
-	if b.cmd != nil {
-		t.Errorf("cmd should be nil for URL backend, got %v", b.cmd)
-	}
 	if err := b.Teardown(); err != nil {
 		t.Errorf("Teardown: %v", err)
 	}
@@ -71,7 +68,13 @@ func TestBaseService_InitURLBackend_InvalidURL(t *testing.T) {
 	}
 }
 
-func TestBaseService_InitCommandBackend_BuildsBridge(t *testing.T) {
+// TestBaseService_InitCommandBackend_NoLocalHandler pins the deliberate
+// trade-off in Init's Command case: no process is spawned and no handler is
+// built here, because MCPService.backendTransport gives each session (a
+// Probe, a Tools call, a mesh stream) its own subprocess instead - see the
+// comment there. A nil command doesn't even need to be valid, since Init no
+// longer tries to run it.
+func TestBaseService_InitCommandBackend_NoLocalHandler(t *testing.T) {
 	b := &baseService{
 		info: &api.ServiceInfo{Type: api.ServiceType_SERVICE_TYPE_MCP, Name: "demo"},
 		backend: &api.RegisterServiceRequest_Command{
@@ -82,11 +85,8 @@ func TestBaseService_InitCommandBackend_BuildsBridge(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 	defer func() { _ = b.Teardown() }()
-	if _, ok := b.handler.(*StdioBridge); !ok {
-		t.Fatalf("handler type: got %T, want *StdioBridge", b.handler)
-	}
-	if b.cmd == nil {
-		t.Error("cmd should be non-nil for Command backend")
+	if b.handler != nil {
+		t.Fatalf("handler: got %T, want nil", b.handler)
 	}
 }
 

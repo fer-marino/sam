@@ -20,7 +20,6 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"os/exec"
 	"strings"
 
 	"github.com/google/sam/api"
@@ -45,7 +44,6 @@ type baseService struct {
 	info    *api.ServiceInfo
 	backend any
 	handler http.Handler
-	cmd     *exec.Cmd // nil for URL-backed
 }
 
 // newReverseProxyHandler builds a single-host reverse-proxy handler for a
@@ -86,8 +84,13 @@ func newReverseProxyHandler(targetURL string) (http.Handler, error) {
 func (b *baseService) Info() *api.ServiceInfo { return b.info }
 func (b *baseService) Handler() http.Handler  { return b.handler }
 
-// Init builds the ingress handler for the backend. URL -> reverse-proxy,
-// Command -> StdioBridge. MCPService extends this; it does not replace it.
+// Init builds the ingress handler for the backend. URL -> reverse-proxy.
+// A command backend gets no handler here: MCPService.backendTransport
+// gives each session its own subprocess instead of one shared one this
+// type would otherwise have to own and tear down - see the comment there.
+// b.handler stays nil, which Handler()'s callers already treat as "no
+// local HTTP ingress for this service" (a 404), not a crash.
+// MCPService extends this; it does not replace it.
 func (b *baseService) Init(ctx context.Context) error {
 	switch x := b.backend.(type) {
 	case *api.RegisterServiceRequest_TargetUrl:
@@ -97,25 +100,18 @@ func (b *baseService) Init(ctx context.Context) error {
 		}
 		b.handler = h
 	case *api.RegisterServiceRequest_Command:
-		h, cmd, err := createStdioBridgeHandler(x.Command)
-		if err != nil {
-			return err
-		}
-		b.handler = h
-		b.cmd = cmd
+		// No handler, no eagerly-spawned process.
 	default:
 		return fmt.Errorf("unsupported backend type %T", b.backend)
 	}
 	return nil
 }
 
-// Teardown kills the child process if any. Safe to call when cmd is nil
-// or already dead.
+// Teardown is a no-op: a URL backend owns nothing here, and a command
+// backend's subprocesses are each spawned and closed by their own session
+// (see MCPService.backendTransport), not held at the service level.
 func (b *baseService) Teardown() error {
-	if b.cmd == nil || b.cmd.Process == nil {
-		return nil
-	}
-	return b.cmd.Process.Kill()
+	return nil
 }
 
 func NewServiceFromRequest(req *api.RegisterServiceRequest) (Service, error) {

@@ -202,3 +202,30 @@ func TestMCPService_BackendTransport_ConcurrentCallsDoNotCrossTalk(t *testing.T)
 		t.Error(err)
 	}
 }
+
+// A RegisterServiceRequest_Command with no command (nil CommandBackend, or
+// an empty Command slice) must be rejected with an error, not reach
+// x.Command.Command[0] and panic - both are reachable from an external
+// RegisterService call, not just a local misconfiguration.
+func TestMCPService_BackendTransport_CommandBackendRejectsMissingCommand(t *testing.T) {
+	cases := []struct {
+		name    string
+		backend *api.RegisterServiceRequest_Command
+	}{
+		{"nil CommandBackend", &api.RegisterServiceRequest_Command{Command: nil}},
+		{"empty command slice", &api.RegisterServiceRequest_Command{Command: &api.CommandBackend{Command: []string{}}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &MCPService{
+				baseService: baseService{
+					info:    &api.ServiceInfo{Type: api.ServiceType_SERVICE_TYPE_MCP, Name: "broken"},
+					backend: tc.backend,
+				},
+			}
+			if _, err := m.backendTransport(); err == nil {
+				t.Fatal("backendTransport: got nil error, want an error for a missing command")
+			}
+		})
+	}
+}

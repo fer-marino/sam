@@ -89,6 +89,9 @@ func (m *MCPService) backendTransport() (mcp.Transport, error) {
 	case *api.RegisterServiceRequest_TargetUrl:
 		return &mcp.StreamableClientTransport{Endpoint: x.TargetUrl}, nil
 	case *api.RegisterServiceRequest_Command:
+		if x.Command == nil || len(x.Command.Command) == 0 {
+			return nil, fmt.Errorf("missing command for command-backed MCP service %q", m.info.GetName())
+		}
 		cmd := exec.Command(x.Command.Command[0], x.Command.Command[1:]...)
 		cmd.Env = os.Environ()
 		for k, v := range x.Command.Env {

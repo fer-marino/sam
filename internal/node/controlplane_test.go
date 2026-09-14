@@ -17,6 +17,8 @@ package node
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -218,5 +220,56 @@ func TestSyncMeshConfig(t *testing.T) {
 	}
 	if len(savedAddrsStr) != 1 || savedAddrsStr[0] != expectedInfo.RouterAddresses[0] {
 		t.Errorf("Expected saved addrs %v, got %v", expectedInfo.RouterAddresses, savedAddrsStr)
+	}
+}
+
+func TestReportNodeCatalog(t *testing.T) {
+	services := []*api.ServiceInfo{
+		{Type: api.ServiceType_SERVICE_TYPE_MCP, Name: "stvv-compliance-docs", Description: "doc lookup"},
+	}
+
+	var gotAuth string
+	var gotReq nodeCatalogRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("Expected POST, got %s", r.Method)
+		}
+		if r.URL.Path != "/nodes/catalog" {
+			t.Errorf("Expected path /nodes/catalog, got %s", r.URL.Path)
+		}
+		gotAuth = r.Header.Get("Authorization")
+		if err := json.NewDecoder(r.Body).Decode(&gotReq); err != nil {
+			t.Errorf("failed to decode request body: %v", err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	biscuitToken := []byte("fake-biscuit-bytes")
+	if err := ReportNodeCatalog(context.Background(), server.URL, biscuitToken, services); err != nil {
+		t.Fatalf("ReportNodeCatalog failed: %v", err)
+	}
+
+	wantAuth := "Bearer " + base64.StdEncoding.EncodeToString(biscuitToken)
+	if gotAuth != wantAuth {
+		t.Errorf("Expected Authorization header %q, got %q", wantAuth, gotAuth)
+	}
+	if len(gotReq.Services) != 1 || gotReq.Services[0].Name != "stvv-compliance-docs" {
+		t.Errorf("Expected relayed services %v, got %v", services, gotReq.Services)
+	}
+}
+
+func TestReportNodeCatalog_HTTPError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "node not enrolled or not admitted", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	err := ReportNodeCatalog(context.Background(), server.URL, []byte("fake-biscuit-bytes"), nil)
+	if err == nil {
+		t.Fatal("Expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "control plane returned status 401") {
+		t.Errorf("Expected error to mention status 401, got %v", err)
 	}
 }

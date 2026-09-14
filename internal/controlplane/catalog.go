@@ -120,9 +120,19 @@ func (s *Server) HandleNodeCatalog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A malformed report (e.g. {"services": [null]}) unmarshals into a nil
+	// element rather than failing - filter those out so a bad report from one
+	// node can't crash rendering for every node's entry in the console.
+	var validServices []*api.ServiceInfo
+	for _, svc := range req.Services {
+		if svc != nil {
+			validServices = append(validServices, svc)
+		}
+	}
+
 	s.catalogMu.Lock()
 	s.catalog[peerID.String()] = nodeCatalogEntry{
-		Services:   req.Services,
+		Services:   validServices,
 		ReportedAt: time.Now(),
 	}
 	s.catalogMu.Unlock()

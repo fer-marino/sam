@@ -400,7 +400,9 @@ function renderServicesTable(nodeCatalog, labelsByPeer) {
         const entry = nodeCatalog[peerID] || {};
         const services = entry.services || [];
         for (const svc of services) {
-            rows.push({ peerID, reportedAt: entry.reported_at, svc });
+            if (svc) {
+                rows.push({ peerID, reportedAt: entry.reported_at, svc });
+            }
         }
     }
 
@@ -415,7 +417,7 @@ function renderServicesTable(nodeCatalog, labelsByPeer) {
             <td>${escapeHTML(SERVICE_TYPE_NAMES[svc.type] || 'unknown')}</td>
             <td>${escapeHTML(svc.description || '')}</td>
             <td>${peerCell(peerID, (labelsByPeer || {})[peerID])}</td>
-            <td>${escapeHTML(reportedAt || '')}</td>
+            <td>${reportedAt ? escapeHTML(new Date(reportedAt).toLocaleString()) : '-'}</td>
         </tr>
     `).join('');
 }

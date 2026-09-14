@@ -244,6 +244,7 @@ async function loadData() {
             setTableMessage('table-enrollments', 4, 'Restricted to administrators.');
         }
         renderNodesTable(data.enrolled_nodes || []);
+        renderServicesTable(data.node_catalog || {});
         renderRoutersTable(data.active_routers || []);
         renderRouterTopography(data.active_routers || []);
         renderBootstrapTokensTable(data.bootstrap_tokens || []);
@@ -349,6 +350,39 @@ function renderNodesTable(nodes) {
                     <button class="btn btn-sm btn-danger" onclick="revokeDevice('${escapeHTML(node.PeerID)}')">Revoke</button>
                 </div>
             </td>
+        </tr>
+    `).join('');
+}
+
+// Service type is a protobuf enum (SERVICE_TYPE_MCP = 1, SERVICE_TYPE_INFERENCE = 2,
+// SERVICE_TYPE_A2A = 3); plain encoding/json on the Go side emits the bare
+// int, not the enum name, and omits it entirely (omitempty) if it's ever 0.
+const SERVICE_TYPE_NAMES = { 1: 'mcp', 2: 'inference', 3: 'a2a' };
+
+function renderServicesTable(nodeCatalog) {
+    const tbody = document.getElementById('table-services');
+    const peerIDs = Object.keys(nodeCatalog || {});
+    const rows = [];
+    for (const peerID of peerIDs) {
+        const entry = nodeCatalog[peerID] || {};
+        const services = entry.services || [];
+        for (const svc of services) {
+            rows.push({ peerID, reportedAt: entry.reported_at, svc });
+        }
+    }
+
+    if (rows.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="5" class="text-center">No nodes have reported any services yet</td></tr>`;
+        return;
+    }
+
+    tbody.innerHTML = rows.map(({ peerID, reportedAt, svc }) => `
+        <tr>
+            <td>${escapeHTML(svc.name || '')}</td>
+            <td>${escapeHTML(SERVICE_TYPE_NAMES[svc.type] || 'unknown')}</td>
+            <td>${escapeHTML(svc.description || '')}</td>
+            <td><code>${escapeHTML(peerID)}</code></td>
+            <td>${escapeHTML(reportedAt || '')}</td>
         </tr>
     `).join('');
 }

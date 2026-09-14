@@ -19,6 +19,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -250,4 +251,49 @@ func FetchMeshPolicy(ctx context.Context, controlPlaneURL string, biscuitToken [
 	}
 
 	return &policyResp, nil
+}
+
+// nodeCatalogRequest mirrors internal/controlplane/catalog.go's request
+// body - kept as a plain JSON struct here rather than a shared package
+// import, matching how this file already treats /policies as a boundary
+// between the two components.
+type nodeCatalogRequest struct {
+	Services []*api.ServiceInfo `json:"services"`
+}
+
+// ReportNodeCatalog self-reports this node's locally registered services to
+// the control plane's /nodes/catalog endpoint, so an admin can see mesh-wide
+// service topology (see catalog.go's HandleNodeCatalog for why this exists
+// instead of the control plane discovering it via DHT/P2P itself).
+func ReportNodeCatalog(ctx context.Context, controlPlaneURL string, biscuitToken []byte, services []*api.ServiceInfo) error {
+	if !strings.HasPrefix(controlPlaneURL, "http://") && !strings.HasPrefix(controlPlaneURL, "https://") {
+		controlPlaneURL = "https://" + controlPlaneURL
+	}
+	controlPlaneURL = strings.TrimSuffix(controlPlaneURL, "/")
+
+	payload, err := json.Marshal(nodeCatalogRequest{Services: services})
+	if err != nil {
+		return fmt.Errorf("failed to encode catalog report: %w", err)
+	}
+
+	urlStr := controlPlaneURL + "/nodes/catalog"
+	req, err := http.NewRequestWithContext(ctx, "POST", urlStr, bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("failed to create HTTP request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+base64.StdEncoding.EncodeToString(biscuitToken))
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("control plane returned status %s: %s", resp.Status, string(body))
+	}
+	return nil
 }

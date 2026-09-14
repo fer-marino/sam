@@ -77,6 +77,13 @@ type Server struct {
 	providersMu sync.RWMutex
 	providers   map[string]*oidc.Provider
 
+	// catalogMu/catalog cache each node's self-reported local service list
+	// (see HandleNodeCatalog), keyed by peer ID. In-memory only: this is a
+	// live-status view, not authoritative state, so it's fine to lose on
+	// restart - every node re-reports on its own next periodic push.
+	catalogMu sync.RWMutex
+	catalog   map[string]nodeCatalogEntry
+
 	ctx      context.Context
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
@@ -98,6 +105,7 @@ func NewServer(config Options, store storage.Store) (*Server, error) {
 		mesh:      NewNopMeshAdapter(),
 		limiter:   rate.NewLimiter(rate.Limit(EnrollRateLimit), EnrollBurst),
 		providers: make(map[string]*oidc.Provider),
+		catalog:   make(map[string]nodeCatalogEntry),
 		ctx:       ctx,
 		cancel:    cancel,
 	}, nil
@@ -204,6 +212,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/enroll", s.HandleEnroll)
 	mux.HandleFunc("/enroll/status", s.HandleEnrollStatus)
 	mux.HandleFunc("/refresh", s.HandleRefresh)
+	mux.HandleFunc("/nodes/catalog", s.HandleNodeCatalog)
 	mux.HandleFunc("/admin/bootstrap-tokens", s.HandleAdminBootstrapTokens)
 	mux.HandleFunc("/admin/enrollments", s.HandleAdminEnrollments)
 	mux.HandleFunc("/admin/enrollments/", s.HandleAdminEnrollmentAction)

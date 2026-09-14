@@ -71,6 +71,10 @@
                     <svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
                     Nodes
                 </a>
+                <a href="#services" class="nav-item" data-target="services">
+                    <svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
+                    Services
+                </a>
                 <a href="#enrollments" class="nav-item" data-target="enrollments">
                     <svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
                     Enrollments
@@ -193,6 +197,32 @@
                             </thead>
                             <tbody id="table-nodes">
                                 <tr><td colspan="4" class="text-center">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Services View: self-reported by each node (see /nodes/catalog);
+                     a live-status cache, not authoritative, so ReportedAt matters. -->
+                <section id="view-services" class="view-section">
+                    <div class="section-header">
+                        <h2>Mesh Services</h2>
+                    </div>
+                    <div class="card">
+                        <div class="table-responsive">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Service</th>
+                                    <th>Type</th>
+                                    <th>Description</th>
+                                    <th>Node ID</th>
+                                    <th>Reported At</th>
+                                </tr>
+                            </thead>
+                            <tbody id="table-services">
+                                <tr><td colspan="5" class="text-center">Loading...</td></tr>
                             </tbody>
                         </table>
                         </div>

@@ -631,6 +631,10 @@ func (n *SamNode) Start(ctx context.Context) error {
 	// Periodically sync mesh policy
 	n.startPolicySyncLoop(ctx, n.config.PolicySyncInterval)
 
+	// Periodically self-report local services to the control plane, so an
+	// admin can see mesh-wide service topology.
+	n.startCatalogReportLoop(ctx, n.config.CatalogReportInterval)
+
 	return nil
 }
 
@@ -2206,6 +2210,60 @@ func (n *SamNode) syncMeshPolicy(ctx context.Context) error {
 
 	logger.Infof("Successfully synchronized mesh policy (generated %d rules)", len(rules))
 	return nil
+}
+
+// reportNodeCatalog self-reports this node's local service list to the
+// control plane (see internal/controlplane/catalog.go's HandleNodeCatalog),
+// so an admin console can show mesh-wide service topology.
+func (n *SamNode) reportNodeCatalog(ctx context.Context) error {
+	controlPlaneURL, err := n.Store.LoadControlPlaneURL()
+	if err != nil || controlPlaneURL == "" {
+		return fmt.Errorf("control plane URL not found in store")
+	}
+
+	token := n.GetIdentity()
+	if len(token) == 0 {
+		return fmt.Errorf("node has no identity token to report its catalog")
+	}
+
+	services := n.ListLocalServices(api.ServiceType_SERVICE_TYPE_UNSPECIFIED)
+	if err := ReportNodeCatalog(ctx, controlPlaneURL, token, services); err != nil {
+		return fmt.Errorf("failed to report node catalog: %w", err)
+	}
+	return nil
+}
+
+func (n *SamNode) startCatalogReportLoop(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = 1 * time.Minute
+	}
+
+	go func() {
+		// Run an initial report after a short delay, once services have had
+		// a chance to register at startup.
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(5 * time.Second):
+			if err := n.reportNodeCatalog(ctx); err != nil {
+				logger.Warnf("Initial node catalog report failed: %v", err)
+			}
+		}
+
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := n.reportNodeCatalog(ctx); err != nil {
+					logger.Warnf("Periodic node catalog report failed: %v", err)
+				}
+			}
+		}
+	}()
 }
 
 func (n *SamNode) startPolicySyncLoop(ctx context.Context, interval time.Duration) {

@@ -86,6 +86,7 @@ func (s *Server) HandleAdminStatus(w http.ResponseWriter, r *http.Request) {
 		"enrollment_requests": reqs,
 		"bootstrap_tokens":    tokens,
 		"policy_json":         policyJSON,
+		"node_catalog":        s.catalogSnapshot(),
 	}
 
 	w.Header().Set("Content-Type", "application/json")

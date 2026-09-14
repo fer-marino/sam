@@ -244,7 +244,7 @@ async function loadData() {
             setTableMessage('table-enrollments', 4, 'Restricted to administrators.');
         }
         renderNodesTable(data.enrolled_nodes || []);
-        renderServicesTable(data.node_catalog || {});
+        renderServicesTable(data.node_catalog || {}, buildLabelsByPeer(data.enrolled_nodes || []));
         renderRoutersTable(data.active_routers || []);
         renderRouterTopography(data.active_routers || []);
         renderBootstrapTokensTable(data.bootstrap_tokens || []);
@@ -333,16 +333,49 @@ function renderUsersTable(users) {
     `).join('');
 }
 
+// Renders an operator-declared labels map (e.g. {component: "stvv", role:
+// "producer"}, from sam-node.yaml's labels: key) as a compact key=value
+// list - the closest thing to a node mnemonic that exists today, since SAM
+// has no dedicated name/alias field. Returns '' if there are none.
+function formatLabels(labels) {
+    const entries = Object.entries(labels || {});
+    if (entries.length === 0) {
+        return '';
+    }
+    return entries.map(([k, v]) => `${k}=${v}`).join(', ');
+}
+
+// A peer ID cell: the raw ID (still the real, authoritative identifier)
+// with its operator-declared labels shown underneath when present.
+function peerCell(peerID, labels) {
+    const labelText = formatLabels(labels);
+    const sub = labelText
+        ? `<div style="color: var(--text-secondary); font-size: 0.85em;">${escapeHTML(labelText)}</div>`
+        : '';
+    return `<code>${escapeHTML(peerID)}</code>${sub}`;
+}
+
+// Builds a peer ID -> labels lookup from the enrolled_nodes list, so other
+// tables (e.g. Services) can show the same labels next to a bare peer ID
+// without a second fetch.
+function buildLabelsByPeer(nodes) {
+    const byPeer = {};
+    for (const node of nodes || []) {
+        byPeer[node.PeerID] = node.Labels || {};
+    }
+    return byPeer;
+}
+
 function renderNodesTable(nodes) {
     const tbody = document.getElementById('table-nodes');
     if (nodes.length === 0) {
         tbody.innerHTML = `<tr><td colspan="4" class="text-center">No enrolled nodes found</td></tr>`;
         return;
     }
-    
+
     tbody.innerHTML = nodes.map(node => `
         <tr>
-            <td><code>${escapeHTML(node.PeerID)}</code></td>
+            <td>${peerCell(node.PeerID, node.Labels)}</td>
             <td>${escapeHTML(node.Role)}</td>
             <td>${escapeHTML(node.OwnerID)}</td>
             <td>
@@ -359,7 +392,7 @@ function renderNodesTable(nodes) {
 // int, not the enum name, and omits it entirely (omitempty) if it's ever 0.
 const SERVICE_TYPE_NAMES = { 1: 'mcp', 2: 'inference', 3: 'a2a' };
 
-function renderServicesTable(nodeCatalog) {
+function renderServicesTable(nodeCatalog, labelsByPeer) {
     const tbody = document.getElementById('table-services');
     const peerIDs = Object.keys(nodeCatalog || {});
     const rows = [];
@@ -381,7 +414,7 @@ function renderServicesTable(nodeCatalog) {
             <td>${escapeHTML(svc.name || '')}</td>
             <td>${escapeHTML(SERVICE_TYPE_NAMES[svc.type] || 'unknown')}</td>
             <td>${escapeHTML(svc.description || '')}</td>
-            <td><code>${escapeHTML(peerID)}</code></td>
+            <td>${peerCell(peerID, (labelsByPeer || {})[peerID])}</td>
             <td>${escapeHTML(reportedAt || '')}</td>
         </tr>
     `).join('');

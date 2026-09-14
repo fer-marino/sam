@@ -646,6 +646,13 @@ body {
     border-bottom: none;
 }
 
+/* An operator-declared label line under a bare peer ID (see peerCell in
+   app.js) - a class, not an inline style, so CSP style-src can stay strict. */
+.cell-subtext {
+    color: var(--text-secondary);
+    font-size: 0.85em;
+}
+
 .text-center {
     text-align: center;
 }

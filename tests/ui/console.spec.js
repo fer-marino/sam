@@ -312,3 +312,28 @@ test('the served markup carries no inline style attribute', async ({ request }) 
   const html = await (await request.get('/index.html')).text();
   expect(html).not.toMatch(/<[^>]+\sstyle=/);
 });
+
+// The Services view has no admin flow to seed it from the browser alone (a
+// real node has to self-report), so this only pins what is reachable without
+// one: the nav item routes there and the empty state renders without a JS
+// error. TestHandleNodeCatalog in internal/controlplane covers the reporting
+// endpoint itself, and TestReportNodeCatalog in internal/node covers the
+// node-side push.
+test('the Services view is reachable and renders its empty state', async ({ page }) => {
+  await login(page);
+
+  await page.click('.nav-item[data-target="services"]');
+  await expect(page).toHaveURL(/#services$/);
+  await expect(page.locator('#view-services')).toBeVisible();
+  await expect(page.locator('#table-services')).toContainText('No nodes have reported any services yet');
+});
+
+// A reload must survive on this view too, same as the other deep-linkable
+// views already covered above for #routers.
+test('the Services view is deep-linkable via the URL hash', async ({ page }) => {
+  await login(page);
+
+  await page.goto('/#services');
+  await expect(page.locator('#view-services')).toBeVisible();
+  await expect(page.locator('.nav-item[data-target="services"]')).toHaveAttribute('aria-current', 'page');
+});

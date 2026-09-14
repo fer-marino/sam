@@ -350,7 +350,7 @@ function formatLabels(labels) {
 function peerCell(peerID, labels) {
     const labelText = formatLabels(labels);
     const sub = labelText
-        ? `<div style="color: var(--text-secondary); font-size: 0.85em;">${escapeHTML(labelText)}</div>`
+        ? `<div class="cell-subtext">${escapeHTML(labelText)}</div>`
         : '';
     return `<code>${escapeHTML(peerID)}</code>${sub}`;
 }
